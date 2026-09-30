@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ZapShare · PC</title>
+<style>
+  :root{--c1:#28D4FF;--c2:#16C9F6;--c3:#00C6F8;--ink:#0B2530;--muted:#5B7380;--bg:#F4F7FA;--card:#fff;--line:#E3EAF0}
+  @media (prefers-color-scheme: dark){:root{--ink:#E8F4F8;--muted:#9AB2BD;--bg:#0E1419;--card:#161D23;--line:#243039}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:linear-gradient(120deg,var(--c1),var(--c2),var(--c3));color:#002B3A;padding:22px 24px}
+  header h1{margin:0;font-size:22px}
+  header p{margin:4px 0 0;opacity:.85}
+  main{max-width:980px;margin:0 auto;padding:20px 16px;display:grid;gap:18px;grid-template-columns:1fr 1fr}
+  @media (max-width:760px){main{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .card h2{margin:0 0 12px;font-size:16px}
+  #drop{border:2px dashed var(--c3);border-radius:14px;padding:30px;text-align:center;color:var(--muted);cursor:pointer}
+  #drop.over{background:rgba(0,198,248,.08)}
+  .btn{display:inline-block;background:var(--c3);color:#002B3A;border:0;border-radius:10px;padding:8px 14px;font-weight:600;text-decoration:none;cursor:pointer}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+  li:last-child{border-bottom:0}
+  .name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .size{color:var(--muted);font-size:13px;white-space:nowrap}
+  .bar{height:6px;background:var(--line);border-radius:4px;overflow:hidden;margin-top:6px}
+  .bar>div{height:100%;background:linear-gradient(90deg,var(--c1),var(--c3));width:0}
+  .empty{color:var(--muted);font-size:14px}
+  .full{grid-column:1/-1}
+</style>
+</head>
+<body>
+<header>
+  <h1>⚡ ZapShare</h1>
+  <p id="dev">Connecting…</p>
+</header>
+<main>
+  <section class="card">
+    <h2>Send to phone</h2>
+    <div id="drop">Drop files here or click to choose<input id="pick" type="file" multiple hidden></div>
+    <ul id="uploads"></ul>
+  </section>
+  <section class="card">
+    <h2>Files shared by the phone</h2>
+    <ul id="shared"><li class="empty">Nothing shared yet. On the phone tap “Add files”.</li></ul>
+  </section>
+  <section class="card full">
+    <h2>Received from this PC</h2>
+    <ul id="received"><li class="empty">No uploads yet.</li></ul>
+  </section>
+</main>
+<script>
+const k = new URLSearchParams(location.search).get('k') || prompt('Enter the 6-digit code shown on your phone');
+const q = p => p + (p.includes('?') ? '&' : '?') + 'k=' + encodeURIComponent(k);
+const fmt = b => { if (b < 1024) return b + ' B'; const u=['KB','MB','GB','TB']; let i=-1; do { b/=1024; i++ } while (b>=1024 && i<u.length-1); return b.toFixed(b<10?2:1)+' '+u[i]; };
+const esc = s => s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+fetch(q('/api/info')).then(r => r.ok ? r.json() : Promise.reject(r.status))
+  .then(i => document.getElementById('dev').textContent = 'Connected to ' + i.name)
+  .catch(() => document.getElementById('dev').textContent = 'Wrong code or phone not reachable');
+
+function render(id, list, emptyText) {
+  const ul = document.getElementById(id);
+  if (!list.length) { ul.innerHTML = '<li class="empty">' + emptyText + '</li>'; return; }
+  ul.innerHTML = list.map(f => `<li><span class="name" title="${esc(f.name)}">${esc(f.name)}</span>
+    <span class="size">${fmt(f.size)}</span><a class="btn" href="${q('/dl?id=' + f.id)}">Download</a></li>`).join('');
+}
+async function refresh() {
+  try {
+    const r = await fetch(q('/api/files')); if (!r.ok) return;
+    const d = await r.json();
+    render('shared', d.shared, 'Nothing shared yet. On the phone tap “Add files”.');
+    render('received', d.received, 'No uploads yet.');
+  } catch (e) {}
+}
+refresh(); setInterval(refresh, 4000);
+
+const drop = document.getElementById('drop'), pick = document.getElementById('pick');
+drop.onclick = () => pick.click();
+pick.onchange = () => queue([...pick.files]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+drop.ondragleave = () => drop.classList.remove('over');
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); queue([...e.dataTransfer.files]); };
+
+let chain = Promise.resolve();
+function queue(files) { files.forEach(f => chain = chain.then(() => upload(f))); }
+function upload(file) {
+  return new Promise(res => {
+    const li = document.createElement('li');
+    li.innerHTML = `<div style="flex:1;min-width:0"><div class="name">${esc(file.name)}</div><div class="bar"><div></div></div></div><span class="size">${fmt(file.size)}</span>`;
+    document.getElementById('uploads').prepend(li);
+    const bar = li.querySelector('.bar>div');
+    const fd = new FormData(); fd.append('file', file, file.name);
+    const x = new XMLHttpRequest();
+    x.open('POST', q('/upload'));
+    x.upload.onprogress = e => { if (e.lengthComputable) bar.style.width = (e.loaded / e.total * 100) + '%'; };
+    x.onload = () => { bar.style.width = '100%'; li.querySelector('.size').textContent = x.status === 200 ? 'Done ✓' : 'Failed'; refresh(); res(); };
+    x.onerror = () => { li.querySelector('.size').textContent = 'Failed'; res(); };
+    x.send(fd);
+  });
+}
+</script>
+</body>
+</html>
