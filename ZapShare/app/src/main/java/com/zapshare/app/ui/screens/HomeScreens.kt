@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LightMode
@@ -104,7 +105,9 @@ import com.zapshare.app.data.HistoryStore
 import com.zapshare.app.data.MediaRepository
 import com.zapshare.app.data.Prefs
 import com.zapshare.app.downloader.VideoDownloader
+import android.content.Intent
 import com.zapshare.app.premium.AdBanner
+import com.zapshare.app.premium.NativeAdCard
 import com.zapshare.app.premium.Premium
 import com.zapshare.app.ui.components.AvatarBubble
 import com.zapshare.app.ui.components.BrandIconBox
@@ -202,6 +205,7 @@ fun HomeScreen(nav: NavController) {
             StorageCard { nav.navigate(Routes.BROWSER) }
 
             AdBanner(onRemoveAds = { nav.navigate(Routes.PREMIUM) })
+            NativeAdCard()
 
             SectionCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -507,6 +511,9 @@ fun SettingsScreen(nav: NavController) {
             }
             SectionCard(padding = 4.dp) {
                 MenuRow(Icons.Filled.History, stringResource(R.string.clear_history), null) { confirmClear = true }
+                MenuRow(Icons.Filled.PrivacyTip, stringResource(R.string.privacy_policy), null) {
+                    ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://sites.google.com/view/mob-apps-inc/privacy-policy")))
+                }
                 if (BuildConfig.DEBUG) {
                     MenuRow(Icons.Filled.BugReport, "Debug: unlock Premium", "Only in debug builds, for testing",
                         trailing = { Switch(debugPremium, { debugPremium = it; Premium.setDebugPremium(it) }) }) {

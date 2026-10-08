@@ -1,7 +1,15 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
+    id("com.google.gms.google-services")
+}
+
+val keystoreProps = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
 }
 
 android {
@@ -9,23 +17,27 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.zapshare.app"
+        applicationId = "com.mai.sharefiles.filetransfer.filesharing.copymydata"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 16
+        versionName = "1.6"
+    }
 
-        // yt-dlp / FFmpeg ship native binaries per CPU. Keep the ABIs you need.
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+    signingConfigs {
+        create("release") {
+            storeFile = file(keystoreProps.getProperty("RELEASE_STORE_FILE"))
+            storePassword = keystoreProps.getProperty("RELEASE_STORE_PASSWORD")
+            keyAlias = keystoreProps.getProperty("RELEASE_KEY_ALIAS")
+            keyPassword = keystoreProps.getProperty("RELEASE_KEY_PASSWORD")
         }
     }
 
     buildTypes {
         release {
-            // Kept off so the embedded Python/yt-dlp runtime is not stripped.
-            // Turn on only after testing with proguard-rules.pro.
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -45,8 +57,6 @@ android {
         buildConfig = true
     }
     packaging {
-        // Required by youtubedl-android (python + ffmpeg are executed from nativeLibraryDir)
-        jniLibs { useLegacyPackaging = true }
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
     }
 }
@@ -76,7 +86,7 @@ dependencies {
 
     // Premium: Google Play Billing (free library; Google takes its standard store fee on sales)
     implementation("com.android.billingclient:billing-ktx:7.1.1")
-    // Ads for free users (Google AdMob, free SDK – replace the test IDs with yours)
+    implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     implementation("com.google.android.gms:play-services-ads:23.6.0")
 
     // Images + video thumbnails
@@ -94,8 +104,4 @@ dependencies {
 
     // Tiny embedded web server for "Connect to PC"
     implementation("org.nanohttpd:nanohttpd:2.3.1")
-
-    // Social video downloader + media converter (yt-dlp + FFmpeg, open source, no API keys)
-    implementation("io.github.junkfood02.youtubedl-android:library:0.18.1")
-    implementation("io.github.junkfood02.youtubedl-android:ffmpeg:0.18.1")
 }

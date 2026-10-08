@@ -2,11 +2,7 @@ package com.zapshare.app.downloader
 
 import android.content.Context
 import android.net.Uri
-import com.yausername.ffmpeg.FFmpeg
-import com.yausername.youtubedl_android.YoutubeDL
-import com.yausername.youtubedl_android.YoutubeDLRequest
 import com.zapshare.app.data.HistoryStore
-import com.zapshare.app.util.FileUtils
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,8 +16,8 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Social-media video downloader powered by the open-source yt-dlp engine (runs fully on-device,
- * no API key, no server). Works for public Facebook, Instagram, X/Twitter, TikTok and 1000+ sites.
+ * Recent-download list. The on-device video engine is omitted from this release so the
+ * install stays small enough for Play. New downloads are not available.
  */
 object VideoDownloader {
     enum class State { QUEUED, FETCHING, DOWNLOADING, SAVING, DONE, FAILED, CANCELLED }
@@ -42,7 +38,7 @@ object VideoDownloader {
     )
 
     val tasks = MutableStateFlow<List<Task>>(emptyList())
-    val engineStatus = MutableStateFlow("Preparing engine…")
+    val engineStatus = MutableStateFlow("Video download is not included in this version")
     private val ready = CompletableDeferred<Boolean>()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private lateinit var app: Context
@@ -50,17 +46,8 @@ object VideoDownloader {
     fun initAsync(ctx: Context) {
         app = ctx.applicationContext
         tasks.value = loadSaved()
-        scope.launch {
-            try {
-                YoutubeDL.getInstance().init(ctx.applicationContext)
-                FFmpeg.getInstance().init(ctx.applicationContext)
-                engineStatus.value = "Ready"
-                ready.complete(true)
-            } catch (e: Throwable) {
-                engineStatus.value = "Engine failed: ${e.message}"
-                ready.complete(false)
-            }
-        }
+        engineStatus.value = "Video download is not included in this version"
+        if (!ready.isCompleted) ready.complete(false)
     }
 
     suspend fun awaitReady(): Boolean = ready.await()
@@ -89,66 +76,11 @@ object VideoDownloader {
 
     private suspend fun run(ctx: Context, t: Task) {
         fun upd(f: (Task) -> Task) = tasks.update { l -> l.map { if (it.id == t.id) f(it) else it } }
-        if (!awaitReady()) { upd { it.copy(state = State.FAILED, error = engineStatus.value) }; return }
-        val dir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "dl/${t.id}").apply { mkdirs() }
-        try {
-            upd { it.copy(state = State.FETCHING) }
-            runCatching { YoutubeDL.getInstance().getInfo(t.url) }.getOrNull()?.let { info ->
-                upd { it.copy(title = info.title, thumbnail = info.thumbnail) }
-            }
-            if (tasks.value.firstOrNull { it.id == t.id }?.state == State.CANCELLED) return
-
-            val req = YoutubeDLRequest(t.url).apply {
-                addOption("-o", "${dir.absolutePath}/%(title).60s.%(ext)s")
-                addOption("--no-playlist")
-                addOption("--no-mtime")
-                addOption("--restrict-filenames")
-                if (t.audioOnly) {
-                    addOption("-x")
-                    addOption("--audio-format", "mp3")
-                } else {
-                    addOption("-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b")
-                    addOption("--merge-output-format", "mp4")
-                }
-            }
-            upd { it.copy(state = State.DOWNLOADING) }
-            YoutubeDL.getInstance().execute(req, t.id) { progress: Float, eta: Long, _: String ->
-                upd { it.copy(progress = (progress / 100f).coerceIn(0f, 1f), eta = eta) }
-            }
-            val file = dir.listFiles()?.filter { it.isFile && !it.name.endsWith(".part") }?.maxByOrNull { it.length() }
-                ?: throw IllegalStateException("Nothing was downloaded")
-            upd { it.copy(state = State.SAVING, progress = 1f) }
-            val detected = FileUtils.mimeOf(file.name)
-            val mime = when {
-                t.audioOnly -> if (detected.startsWith("audio/")) detected else "audio/mpeg"
-                detected.startsWith("video/") -> detected
-                else -> "video/mp4"
-            }
-            val uri = FileUtils.copyToGallery(ctx, Uri.fromFile(file), file.name, mime, video = !t.audioOnly)
-            HistoryStore.add(file.name, file.length(), mime, false, t.platform, uri)
-            upd { it.copy(state = State.DONE, resultUri = uri, fileName = file.name) }
-            persist()
-        } catch (e: Throwable) {
-            val cancelled = tasks.value.firstOrNull { it.id == t.id }?.state == State.CANCELLED
-            if (!cancelled) {
-                val msg = (e.message ?: "Download failed").lines().lastOrNull { it.isNotBlank() }?.take(220)
-                upd { it.copy(state = State.FAILED, error = friendly(msg ?: "Download failed", t.platform)) }
-            }
-        } finally {
-            dir.deleteRecursively()
-        }
-    }
-
-    private fun friendly(msg: String, platform: String): String = when {
-        "login" in msg.lowercase() || "rate-limit" in msg.lowercase() || "private" in msg.lowercase() ->
-            "$platform requires login for this post (only public posts are supported). $msg"
-        "Unsupported URL" in msg -> "This link is not supported."
-        else -> msg
+        upd { it.copy(state = State.FAILED, error = engineStatus.value) }
     }
 
     fun cancel(id: String) {
         tasks.update { l -> l.map { if (it.id == id) it.copy(state = State.CANCELLED) else it } }
-        runCatching { YoutubeDL.getInstance().destroyProcessById(id) }
     }
 
     fun remove(id: String) {
@@ -198,18 +130,5 @@ object VideoDownloader {
         runCatching { storeFile().writeText(arr.toString()) }
     }
 
-    /** Social sites change often. Updating yt-dlp fixes most "stopped working" issues. Free. */
-    suspend fun updateEngine(ctx: Context): String {
-        if (!awaitReady()) return engineStatus.value
-        return try {
-            val status = YoutubeDL.getInstance().updateYoutubeDL(ctx.applicationContext, YoutubeDL.UpdateChannel.STABLE)
-            when (status?.name) {
-                "DONE" -> "Downloader engine updated"
-                "ALREADY_UP_TO_DATE" -> "Downloader engine is already up to date"
-                else -> "Engine checked"
-            }
-        } catch (e: Throwable) {
-            "Update failed: ${e.message}"
-        }
-    }
+    suspend fun updateEngine(ctx: Context): String = engineStatus.value
 }

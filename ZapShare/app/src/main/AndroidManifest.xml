@@ -63,7 +63,6 @@
     <application
         android:name=".ZapApp"
         android:allowBackup="false"
-        android:extractNativeLibs="true"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
@@ -74,10 +73,9 @@
         android:localeConfig="@xml/locales_config"
         tools:targetApi="35">
 
-        <!-- AdMob app ID. This is Google's public TEST id: replace with your own before release. -->
         <meta-data
             android:name="com.google.android.gms.ads.APPLICATION_ID"
-            android:value="ca-app-pub-3940256099942544~3347511713" />
+            android:value="ca-app-pub-9297250663056879~7564359667" />
 
         <!-- Remembers the in-app language on Android 8–12 -->
         <service

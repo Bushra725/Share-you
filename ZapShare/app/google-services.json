@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "373971574027",
+    "project_id": "shareyou-95904",
+    "storage_bucket": "shareyou-95904.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:373971574027:android:debb5dfe637069893e560e",
+        "android_client_info": {
+          "package_name": "com.mai.sharefiles.filetransfer.filesharing.copymydata"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCHRAChcCYFjXY10S9Pt0TS8kbQmXWGU2E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      },
+      "admob_app_id": "ca-app-pub-9297250663056879~7564359667"
+    }
+  ],
+  "configuration_version": "1"
+}

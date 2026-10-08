@@ -22,7 +22,7 @@ class ZapApp : Application(), ImageLoaderFactory {
         createChannels()
         Premium.init(this)
         Ads.init(this)
-        VideoDownloader.initAsync(this)   // unpacks yt-dlp + FFmpeg in the background (first run only)
+        VideoDownloader.initAsync(this)
     }
 
     private fun createChannels() {

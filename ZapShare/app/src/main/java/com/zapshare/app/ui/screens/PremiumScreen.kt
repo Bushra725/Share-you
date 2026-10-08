@@ -47,8 +47,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.widget.Toast
 import androidx.navigation.NavController
 import com.zapshare.app.R
+import com.zapshare.app.premium.Ads
 import com.zapshare.app.premium.Premium
 import com.zapshare.app.ui.components.BrandIconBox
 import com.zapshare.app.ui.components.GradientButton
@@ -134,6 +136,15 @@ fun PremiumScreen(nav: NavController) {
                 }, Modifier.fillMaxWidth())
                 TextButton(onClick = { appScope.launch { Premium.restore() } }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                     Text(stringResource(R.string.restore_purchases))
+                }
+                TextButton(onClick = {
+                    val activity = ctx.findActivity()
+                    if (activity == null) return@TextButton
+                    Ads.showRewarded(activity) {
+                        Toast.makeText(ctx, "Thanks for watching", Toast.LENGTH_SHORT).show()
+                    }
+                }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                    Text("Watch a short ad")
                 }
                 Text("Subscriptions renew automatically and can be cancelled anytime in Google Play → Subscriptions.",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,

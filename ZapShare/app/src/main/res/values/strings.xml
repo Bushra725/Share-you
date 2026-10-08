@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">ZapShare</string>
+    <string name="app_name">Share</string>
     <string name="nav_home">Home</string>
     <string name="nav_files">Files</string>
     <string name="nav_player">Player</string>
@@ -92,4 +92,5 @@
     <string name="add_photos">Add photos &amp; videos</string>
     <string name="add_files">Add other files</string>
     <string name="hide_n">Hide %1$d in Safebox</string>
+    <string name="privacy_policy">Privacy policy</string>
 </resources>
