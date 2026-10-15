@@ -59,6 +59,11 @@ object Prefs {
         get() = sp.getBoolean("premium_debug", false)
         set(v) = sp.edit().putBoolean("premium_debug", v).apply()
 
+    /** Epoch millis until which a rewarded ad keeps Premium active. */
+    var premiumAdUntil: Long
+        get() = sp.getLong("premium_ad_until", 0L)
+        set(v) = sp.edit().putLong("premium_ad_until", v).apply()
+
     // ---- Safebox ----
     var vaultPinHash: String?
         get() = sp.getString("vault_pin", null)
@@ -72,6 +77,16 @@ object Prefs {
     var vaultBiometric: Boolean
         get() = sp.getBoolean("vault_bio", false)
         set(v) = sp.edit().putBoolean("vault_bio", v).apply()
+    var vaultPatternHash: String?
+        get() = sp.getString("vault_pattern", null)
+        set(v) = sp.edit().putString("vault_pattern", v).apply()
+    var vaultPatternSalt: String?
+        get() = sp.getString("vault_pattern_salt", null)
+        set(v) = sp.edit().putString("vault_pattern_salt", v).apply()
+    /** JSON array of {q, s, h} for the security questions. */
+    var vaultQuestions: String?
+        get() = sp.getString("vault_questions", null)
+        set(v) = sp.edit().putString("vault_questions", v).apply()
 
     val avatars = listOf("🐱", "🦊", "🐼", "🐸", "🐵", "🦄", "🐯", "🐨", "🐙", "🐧", "🦁", "🐶")
 }

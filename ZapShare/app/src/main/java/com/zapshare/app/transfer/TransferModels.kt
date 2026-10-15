@@ -19,7 +19,15 @@ data class TransferItem(
     val transferred: Long = 0,
     val status: ItemStatus = ItemStatus.WAITING,
     val resultUri: Uri? = null,
-    val error: String? = null
+    val error: String? = null,
+    /** Same id for every copy of one share, including copies the host forwards. */
+    val shareKey: String = "",
+    /** Device that originally shared the file. */
+    val originName: String = "",
+    /** True when this copy was forwarded by the group host. */
+    val relay: Boolean = false,
+    /** Local copy of the original bytes, used when the host forwards a file. */
+    val relayPath: String? = null
 ) {
     val progress: Float
         get() = when {

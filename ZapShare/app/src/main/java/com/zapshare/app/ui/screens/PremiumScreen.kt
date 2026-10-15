@@ -140,11 +140,18 @@ fun PremiumScreen(nav: NavController) {
                 TextButton(onClick = {
                     val activity = ctx.findActivity()
                     if (activity == null) return@TextButton
-                    Ads.showRewarded(activity) {
-                        Toast.makeText(ctx, "Thanks for watching", Toast.LENGTH_SHORT).show()
-                    }
+                    Ads.showRewarded(
+                        activity,
+                        onReward = {
+                            Premium.grantFromAd()
+                            Toast.makeText(ctx, "Premium unlocked for 24 hours", Toast.LENGTH_LONG).show()
+                        },
+                        onUnavailable = {
+                            Toast.makeText(ctx, "The ad could not be loaded. Check your connection and try again.", Toast.LENGTH_LONG).show()
+                        }
+                    )
                 }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                    Text("Watch a short ad")
+                    Text("Watch a short ad to unlock Premium for 24 hours")
                 }
                 Text("Subscriptions renew automatically and can be cancelled anytime in Google Play → Subscriptions.",
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center,

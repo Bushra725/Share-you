@@ -20,7 +20,7 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
-    <!-- Storage / media -->
+    <!-- Storage / media. Photos and videos are read only so the user can send, play, and clean them. Nothing is uploaded. -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
@@ -28,7 +28,9 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29"
         tools:ignore="ScopedStorage" />
+    <!-- Photos: pick pictures to send, show received photos, and find large or similar photos. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Videos: send videos, play them, and find large recordings that fill storage. -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
@@ -39,6 +41,8 @@
 
     <!-- Install received APKs -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Phone Cleaner: the uninstall confirmation can report back -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
 
     <!-- Background transfer + music -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -58,6 +62,12 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="*/*" />
         </intent>
+        <!-- Cleaner: detect WhatsApp / Telegram to show their icons -->
+        <package android:name="com.whatsapp" />
+        <package android:name="com.whatsapp.w4b" />
+        <package android:name="org.telegram.messenger" />
+        <package android:name="org.telegram.messenger.web" />
+        <package android:name="org.thunderdog.challegram" />
     </queries>
 
     <application
@@ -115,6 +125,16 @@
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="fullSensor"
             tools:replace="android:screenOrientation" />
+
+        <service
+            android:name=".clean.NotificationBlockerService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
 
         <service
             android:name=".transfer.TransferService"

@@ -10,8 +10,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,14 +28,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Pattern
 import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +46,7 @@ import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -49,6 +55,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -56,6 +63,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -83,6 +93,7 @@ import com.zapshare.app.ui.theme.BrandGradient
 import com.zapshare.app.ui.theme.Cyan3
 import com.zapshare.app.ui.theme.Navy
 import com.zapshare.app.util.FileUtils
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.launch
 
 @Composable
@@ -111,25 +122,78 @@ private fun SafeboxContent(nav: NavController) {
         owner?.lifecycle?.addObserver(obs)
         onDispose { owner?.lifecycle?.removeObserver(obs) }
     }
-    val leave: () -> Unit = { Vault.lock(ctx); nav.popBackStack() }
-    BackHandler { leave() }
+    val leaving = remember { AtomicBoolean(false) }
+    val leave: () -> Unit = {
+        if (leaving.compareAndSet(false, true)) {
+            if (nav.currentBackStackEntry?.destination?.route == "safebox") nav.popBackStack()
+            Vault.lock(ctx)
+        }
+    }
+    var setupQuestions by remember { mutableStateOf(false) }
+    var overlay by remember { mutableStateOf<VaultOverlay?>(null) }
+    var usePattern by remember { mutableStateOf(Vault.hasPattern()) }
+    BackHandler {
+        if (overlay != null) overlay = null else leave()
+    }
 
-    when {
-        !Vault.isSetUp() -> PinScreen("Create a Safebox PIN", "Choose 4–6 digits. You'll need it to open your private files.", confirm = true, onBack = leave) { pin ->
-            Vault.setup(ctx, pin); null
-        }
-        !unlocked -> {
-            val bio = Prefs.vaultBiometric && canBiometric(ctx)
-            PinScreen("Safebox is locked", "Enter your PIN", confirm = false, onBack = leave,
-                onBiometric = if (bio) ({ biometric(activity as? FragmentActivity) { appScope.launch { Vault.unlockAfterBiometric(ctx) } } }) else null
+    Box(Modifier.fillMaxSize()) {
+        when {
+            !Vault.isSetUp() -> PinScreen(
+                "Create a Safebox PIN",
+                "Choose 4–6 digits. You'll need it to open your private files.",
+                confirm = true,
+                onBack = leave
+            ) { pin ->
+                Vault.setup(ctx, pin)
+                setupQuestions = true
+                null
+            }
+            setupQuestions -> QuestionEditor(
+                title = "Security questions",
+                subtitle = "These answers reset your PIN or pattern if you forget them.",
+                onBack = leave
+            ) { answers ->
+                Vault.saveQuestions(answers)
+                setupQuestions = false
+            }
+            !unlocked && overlay == VaultOverlay.Reset -> ResetLock(onBack = { overlay = null }) { overlay = null }
+            !unlocked && usePattern && Vault.hasPattern() -> PatternUnlock(
+                onBack = leave,
+                onUsePin = { usePattern = false },
+                onForgot = { overlay = VaultOverlay.Reset },
+                onBiometric = if (Prefs.vaultBiometric && canBiometric(ctx)) {
+                    { biometric(activity as? FragmentActivity) { appScope.launch { Vault.unlockAfterBiometric(ctx) } } }
+                } else null
+            )
+            !unlocked -> PinScreen(
+                "Safebox is locked",
+                "Enter your PIN",
+                confirm = false,
+                onBack = leave,
+                onBiometric = if (Prefs.vaultBiometric && canBiometric(ctx)) {
+                    { biometric(activity as? FragmentActivity) { appScope.launch { Vault.unlockAfterBiometric(ctx) } } }
+                } else null,
+                onForgot = { overlay = VaultOverlay.Reset },
+                onPattern = if (Vault.hasPattern()) ({ usePattern = true }) else null
             ) { pin -> if (Vault.unlockWithPin(ctx, pin)) null else "Wrong PIN" }
+            overlay == VaultOverlay.ChangePin -> ChangePinScreen(onBack = { overlay = null })
+            overlay == VaultOverlay.Pattern -> PatternSetup(onBack = { overlay = null })
+            overlay == VaultOverlay.Questions -> QuestionEditor(
+                title = "Reset security questions",
+                subtitle = "Choose two questions. The old answers stop working.",
+                onBack = { overlay = null }
+            ) { answers ->
+                Vault.saveQuestions(answers)
+                overlay = null
+                Toast.makeText(ctx, "Security questions updated", Toast.LENGTH_SHORT).show()
+            }
+            else -> VaultContent(nav, leave) { overlay = it }
         }
-        else -> VaultContent(nav, leave)
     }
 }
 
 @Composable
-private fun VaultContent(nav: NavController, leave: () -> Unit) {
+private fun VaultContent(nav: NavController, leave: () -> Unit, onManage: (VaultOverlay) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val entries by Vault.entries.collectAsState()
@@ -215,6 +279,13 @@ private fun VaultContent(nav: NavController, leave: () -> Unit) {
                         Text("Unlock with fingerprint / face", Modifier.weight(1f))
                         Switch(bio, { bio = it; Prefs.vaultBiometric = it })
                     }
+                    TextButton(onClick = { onManage(VaultOverlay.ChangePin) }) { Text("Change PIN") }
+                    TextButton(onClick = { onManage(VaultOverlay.Pattern) }) {
+                        Text(if (Vault.hasPattern()) "Change pattern lock" else "Set a pattern lock")
+                    }
+                    TextButton(onClick = { onManage(VaultOverlay.Questions) }) {
+                        Text(if (Vault.hasQuestions()) "Reset security questions" else "Set security questions")
+                    }
                 }
             }
             if (busy) item { LoadingBox() }
@@ -297,7 +368,10 @@ private fun VaultContent(nav: NavController, leave: () -> Unit) {
 @Composable
 private fun PinScreen(
     title: String, subtitle: String, confirm: Boolean, onBack: () -> Unit,
-    onBiometric: (() -> Unit)? = null, onSubmit: suspend (String) -> String?
+    onBiometric: (() -> Unit)? = null,
+    onForgot: (() -> Unit)? = null,
+    onPattern: (() -> Unit)? = null,
+    onSubmit: suspend (String) -> String?
 ) {
     var pin by remember { mutableStateOf("") }
     var first by remember { mutableStateOf<String?>(null) }
@@ -363,6 +437,10 @@ private fun PinScreen(
             }
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = { submit() }, enabled = pin.length >= 4 && !working) { Text("OK", fontSize = 18.sp) }
+            if (onPattern != null || onForgot != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (onPattern != null) TextButton(onClick = onPattern) { Text("Use pattern") }
+                if (onForgot != null) TextButton(onClick = onForgot) { Text("Forgot PIN?") }
+            }
         }
     }
 }
@@ -382,6 +460,267 @@ private fun biometric(activity: FragmentActivity?, onSuccess: () -> Unit) {
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_WEAK)
             .build()
     )
+}
+
+private enum class VaultOverlay { ChangePin, Pattern, Questions, Reset }
+
+private val SECURITY_QUESTIONS = listOf(
+    "What city were you born in?",
+    "What is your mother's first name?",
+    "What was the name of your first school?",
+    "What is your favorite color?",
+    "What is your first pet's name?"
+)
+
+@Composable
+private fun ChangePinScreen(onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    var current by remember { mutableStateOf<String?>(null) }
+    if (current == null) {
+        PinScreen("Enter your current PIN", "Confirm it's you before choosing a new PIN.", confirm = false, onBack = onBack) { pin ->
+            if (Vault.unlockWithPin(ctx, pin)) { current = pin; null } else "Wrong PIN"
+        }
+    } else {
+        PinScreen("Choose a new PIN", "Enter it twice. The old PIN will stop working.", confirm = true, onBack = onBack) { pin ->
+            if (Vault.changePin(current!!, pin, ctx)) {
+                Toast.makeText(ctx, "PIN changed", Toast.LENGTH_SHORT).show()
+                onBack()
+                null
+            } else "Could not change the PIN"
+        }
+    }
+}
+
+@Composable
+private fun PatternSetup(onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    var first by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var reset by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    ZapScaffold("Pattern lock", onBack = onBack) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(Icons.Filled.Pattern, null, tint = Cyan3, modifier = Modifier.size(42.dp))
+            Spacer(Modifier.height(12.dp))
+            Text(if (first == null) "Draw a new pattern" else "Draw the same pattern again", style = MaterialTheme.typography.titleLarge, textAlign = TextAlign.Center)
+            Text("Connect at least 4 dots.", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+            Text(error ?: "", color = MaterialTheme.colorScheme.error)
+            Spacer(Modifier.height(12.dp))
+            PatternPad(reset) { pattern ->
+                val saved = first
+                if (saved == null) {
+                    first = pattern
+                    error = null
+                    reset++
+                } else if (saved != pattern) {
+                    first = null
+                    error = "Patterns don't match. Try again"
+                    reset++
+                } else scope.launch {
+                    Vault.setPattern(pattern)
+                    Toast.makeText(ctx, "Pattern lock saved", Toast.LENGTH_SHORT).show()
+                    onBack()
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            if (Vault.hasPattern()) TextButton(onClick = {
+                Vault.clearPattern()
+                Toast.makeText(ctx, "Pattern lock removed", Toast.LENGTH_SHORT).show()
+                onBack()
+            }) { Text("Remove pattern lock") }
+        }
+    }
+}
+
+@Composable
+private fun PatternUnlock(
+    onBack: () -> Unit,
+    onUsePin: () -> Unit,
+    onForgot: () -> Unit,
+    onBiometric: (() -> Unit)?
+) {
+    val ctx = LocalContext.current
+    var error by remember { mutableStateOf<String?>(null) }
+    var reset by remember { mutableIntStateOf(0) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(Unit) { onBiometric?.invoke() }
+    ZapScaffold("Safebox", onBack = onBack) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("Draw your pattern", style = MaterialTheme.typography.titleLarge)
+            Text(error ?: " ", color = MaterialTheme.colorScheme.error)
+            PatternPad(reset) { pattern ->
+                scope.launch {
+                    if (Vault.unlockWithPattern(ctx, pattern)) error = null
+                    else { error = "Wrong pattern"; reset++ }
+                }
+            }
+            if (onBiometric != null) TextButton(onClick = onBiometric) { Text("Use fingerprint") }
+            TextButton(onClick = onUsePin) { Text("Use PIN") }
+            TextButton(onClick = onForgot) { Text("Forgot pattern?") }
+        }
+    }
+}
+
+@Composable
+private fun QuestionEditor(title: String, subtitle: String, onBack: () -> Unit, onSave: suspend (List<Pair<Int, String>>) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var firstQ by remember { mutableIntStateOf(0) }
+    var secondQ by remember { mutableIntStateOf(1) }
+    var firstA by remember { mutableStateOf("") }
+    var secondA by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf<String?>(null) }
+    var working by remember { mutableStateOf(false) }
+    ZapScaffold(title, onBack = onBack) { pad ->
+        Column(
+            Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Question 1", fontWeight = FontWeight.SemiBold)
+            SECURITY_QUESTIONS.forEachIndexed { index, q ->
+                Text(
+                    q,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(if (firstQ == index) Cyan3.copy(alpha = .25f) else MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable { if (index != secondQ) firstQ = index }
+                        .padding(10.dp)
+                )
+            }
+            OutlinedTextField(firstA, { firstA = it }, label = { Text("Answer") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text("Question 2", fontWeight = FontWeight.SemiBold)
+            SECURITY_QUESTIONS.forEachIndexed { index, q ->
+                Text(
+                    q,
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp))
+                        .background(if (secondQ == index) Cyan3.copy(alpha = .25f) else MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable { if (index != firstQ) secondQ = index }
+                        .padding(10.dp)
+                )
+            }
+            OutlinedTextField(secondA, { secondA = it }, label = { Text("Answer") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text(error ?: "", color = MaterialTheme.colorScheme.error)
+            com.zapshare.app.ui.components.GradientButton("Save", {
+                when {
+                    firstA.trim().length < 2 || secondA.trim().length < 2 -> error = "Enter both answers"
+                    firstQ == secondQ -> error = "Choose two different questions"
+                    else -> {
+                        working = true
+                        scope.launch {
+                            onSave(listOf(firstQ to firstA, secondQ to secondA))
+                            working = false
+                        }
+                    }
+                }
+            }, Modifier.fillMaxWidth(), enabled = !working)
+        }
+    }
+}
+
+@Composable
+private fun ResetLock(onBack: () -> Unit, onDone: () -> Unit) {
+    val ctx = LocalContext.current
+    val indexes = remember { Vault.questionIndexes() }
+    var stage by remember { mutableIntStateOf(0) }
+    var answers by remember { mutableStateOf(List(indexes.size) { "" }) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    if (indexes.size < 2) {
+        ZapScaffold("Reset lock", onBack = onBack) { pad ->
+            Column(Modifier.padding(pad).padding(24.dp)) {
+                Text("Security questions are not set yet. Open the Safebox with your PIN, then set questions from the lock options.")
+            }
+        }
+        return
+    }
+    if (stage == 0) {
+        ZapScaffold("Reset lock", onBack = onBack) { pad ->
+            Column(
+                Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("Answer your security questions to choose a new PIN.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                indexes.forEachIndexed { i, q ->
+                    Text(SECURITY_QUESTIONS.getOrElse(q) { "Question" }, fontWeight = FontWeight.SemiBold)
+                    OutlinedTextField(
+                        answers.getOrElse(i) { "" },
+                        { value -> answers = answers.toMutableList().also { it[i] = value } },
+                        label = { Text("Answer") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+                Text(error ?: "", color = MaterialTheme.colorScheme.error)
+                com.zapshare.app.ui.components.GradientButton("Continue", {
+                    scope.launch {
+                        val pairs = indexes.mapIndexed { i, q -> q to answers.getOrElse(i) { "" } }
+                        if (Vault.checkQuestions(pairs)) { error = null; stage = 1 }
+                        else error = "Those answers don't match"
+                    }
+                }, Modifier.fillMaxWidth())
+            }
+        }
+    } else {
+        PinScreen("Create a new PIN", "This replaces your old PIN and removes the pattern lock.", confirm = true, onBack = onBack) { pin ->
+            Vault.resetPin(ctx, pin)
+            Toast.makeText(ctx, "PIN reset", Toast.LENGTH_SHORT).show()
+            onDone()
+            null
+        }
+    }
+}
+
+@Composable
+private fun PatternPad(resetKey: Int, onComplete: (String) -> Unit) {
+    var selected by remember(resetKey) { mutableStateOf(listOf<Int>()) }
+    Canvas(
+        Modifier.size(280.dp).pointerInput(resetKey) {
+            val picked = ArrayList<Int>()
+            fun hit(p: Offset): Int? {
+                val cell = size.width / 3f
+                for (i in 0 until 9) {
+                    val c = Offset((i % 3) * cell + cell / 2f, (i / 3) * cell + cell / 2f)
+                    if ((p - c).getDistance() < cell * 0.34f) return i
+                }
+                return null
+            }
+            detectDragGestures(
+                onDragStart = { p ->
+                    picked.clear()
+                    hit(p)?.let { picked.add(it) }
+                    selected = picked.toList()
+                },
+                onDrag = { change, _ ->
+                    hit(change.position)?.let { dot ->
+                        if (dot !in picked && picked.isNotEmpty()) picked.add(dot)
+                    }
+                    selected = picked.toList()
+                },
+                onDragEnd = {
+                    val done = picked.toList()
+                    picked.clear()
+                    if (done.size >= 4) onComplete(done.joinToString(","))
+                    else selected = emptyList()
+                },
+                onDragCancel = { picked.clear(); selected = emptyList() }
+            )
+        }
+    ) {
+        val cell = size.width / 3f
+        fun center(i: Int) = Offset((i % 3) * cell + cell / 2f, (i / 3) * cell + cell / 2f)
+        for (n in 0 until selected.size - 1) {
+            drawLine(Cyan3, center(selected[n]), center(selected[n + 1]), strokeWidth = 10f, cap = StrokeCap.Round)
+        }
+        for (i in 0 until 9) {
+            val on = i in selected
+            drawCircle(if (on) Cyan3 else Navy.copy(alpha = 0.25f), radius = if (on) cell * 0.16f else cell * 0.1f, center = center(i))
+        }
+    }
 }
 
 

@@ -1,0 +1,93 @@
+{
+  "identifier" : "ShareProducts",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "19.99",
+      "familyShareable" : false,
+      "internalID" : "1000003",
+      "localizations" : [
+        {
+          "description" : "Unlock Share Premium for this Apple ID. One payment, no renewal.",
+          "displayName" : "Lifetime",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "zapshare_premium_lifetime",
+      "referenceName" : "Lifetime",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_locale" : "en_US",
+    "_storefront" : "USA"
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "SHARE_PREMIUM",
+      "localizations" : [
+
+      ],
+      "name" : "Share Premium",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "1.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "1000001",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Share Premium for one month. Renews automatically.",
+              "displayName" : "Monthly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "zapshare_premium_monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Monthly",
+          "subscriptionGroupID" : "SHARE_PREMIUM",
+          "type" : "RecurringSubscription"
+        },
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "9.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "1000002",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Share Premium for one year. Renews automatically.",
+              "displayName" : "Yearly",
+              "locale" : "en_US"
+            }
+          ],
+          "productID" : "zapshare_premium_yearly",
+          "recurringSubscriptionPeriod" : "P1Y",
+          "referenceName" : "Yearly",
+          "subscriptionGroupID" : "SHARE_PREMIUM",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

@@ -34,6 +34,7 @@ import kotlinx.coroutines.launch
  */
 object Premium {
     const val FREE_FILE_LIMIT = 100L * 1024 * 1024   // 100 MB per file for free users
+    private const val AD_UNLOCK_MS = 24L * 60 * 60 * 1000
 
     const val SUB_MONTHLY = "zapshare_premium_monthly"
     const val SUB_YEARLY = "zapshare_premium_yearly"
@@ -64,7 +65,7 @@ object Premium {
     private var client: BillingClient? = null
 
     fun init(ctx: Context) {
-        isPremium.value = Prefs.premiumPurchased || Prefs.premiumDebug
+        refresh()
         client = BillingClient.newBuilder(ctx.applicationContext)
             .setListener { result, purchases ->
                 when {
@@ -76,6 +77,7 @@ object Premium {
                 }
             }
             .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
+            .enableAutoServiceReconnection()
             .build()
         connect()
     }
@@ -94,7 +96,10 @@ object Premium {
                 }
             }
 
-            override fun onBillingServiceDisconnected() { storeReady.value = false }
+            override fun onBillingServiceDisconnected() {
+                // Reconnect is handled by enableAutoServiceReconnection().
+                storeReady.value = false
+            }
         })
     }
 
@@ -106,18 +111,35 @@ object Premium {
             QueryProductDetailsParams.newBuilder().setProductList(
                 listOf(product(SUB_MONTHLY, BillingClient.ProductType.SUBS), product(SUB_YEARLY, BillingClient.ProductType.SUBS))
             ).build()
-        ).productDetailsList.orEmpty()
+        )
         val inapp = c.queryProductDetails(
             QueryProductDetailsParams.newBuilder().setProductList(listOf(product(LIFETIME, BillingClient.ProductType.INAPP))).build()
-        ).productDetailsList.orEmpty()
-        val byId = (subs + inapp).associateBy { it.productId }
+        )
+        val byId = (subs.productDetailsList.orEmpty() + inapp.productDetailsList.orEmpty()).associateBy { it.productId }
         plans.value = plans.value.map { p ->
-            val d = byId[p.id] ?: return@map p
-            val price = if (p.isSubscription)
-                d.subscriptionOfferDetails?.firstOrNull()?.pricingPhases?.pricingPhaseList?.lastOrNull()?.formattedPrice
-            else d.oneTimePurchaseOfferDetails?.formattedPrice
-            p.copy(details = d, price = price)
+            val d = byId[p.id] ?: return@map p.copy(details = null, price = null)
+            p.copy(details = d, price = priceOf(d, p.isSubscription))
         }
+    }
+
+    private fun priceOf(details: ProductDetails, subscription: Boolean): String? {
+        return if (subscription) {
+            details.subscriptionOfferDetails?.firstOrNull()
+                ?.pricingPhases?.pricingPhaseList?.lastOrNull()?.formattedPrice
+        } else {
+            details.oneTimePurchaseOfferDetailsList?.firstOrNull()?.formattedPrice
+                ?: details.oneTimePurchaseOfferDetails?.formattedPrice
+        }
+    }
+
+    private fun offerToken(details: ProductDetails, subscription: Boolean): String? {
+        val token = if (subscription) {
+            details.subscriptionOfferDetails?.firstOrNull()?.offerToken
+        } else {
+            details.oneTimePurchaseOfferDetailsList?.firstOrNull()?.offerToken
+                ?: details.oneTimePurchaseOfferDetails?.offerToken
+        }
+        return token?.takeIf { it.isNotEmpty() }
     }
 
     /** Re-checks what the user owns (also used by "Restore purchases"). */
@@ -131,52 +153,82 @@ object Premium {
         val owned = (subs.purchasesList + inapp.purchasesList).filter {
             it.purchaseState == Purchase.PurchaseState.PURCHASED && it.products.any { id -> id in ALL }
         }
-        owned.forEach { acknowledge(it) }
-        setPurchased(owned.isNotEmpty())
+        if (owned.isEmpty()) {
+            setPurchased(false)
+        } else if (owned.any { acknowledge(it) }) {
+            setPurchased(true)
+        }
     }
 
     private suspend fun handle(purchases: List<Purchase>) {
         purchases.forEach { p ->
             if (p.purchaseState == Purchase.PurchaseState.PURCHASED && p.products.any { it in ALL }) {
-                acknowledge(p)
-                setPurchased(true)
-                message.value = "Welcome to Premium! 🎉"
+                if (acknowledge(p)) {
+                    setPurchased(true)
+                    message.value = "Welcome to Premium! 🎉"
+                }
             } else if (p.purchaseState == Purchase.PurchaseState.PENDING) {
                 message.value = "Payment pending. Premium unlocks when it completes."
             }
         }
     }
 
-    private suspend fun acknowledge(p: Purchase) {
-        if (p.isAcknowledged) return
-        client?.acknowledgePurchase(AcknowledgePurchaseParams.newBuilder().setPurchaseToken(p.purchaseToken).build())
+    /** Acknowledge within 3 days, or Google refunds the purchase. */
+    private suspend fun acknowledge(p: Purchase): Boolean {
+        if (p.isAcknowledged) return true
+        val result = client?.acknowledgePurchase(
+            AcknowledgePurchaseParams.newBuilder().setPurchaseToken(p.purchaseToken).build()
+        ) ?: return false
+        return result.responseCode == BillingClient.BillingResponseCode.OK
     }
 
     fun buy(activity: Activity, plan: Plan) {
         val c = client
         val d = plan.details
-        if (c == null || !c.isReady || d == null) {
+        val token = d?.let { offerToken(it, plan.isSubscription) }
+        if (c == null || d == null || token == null) {
             message.value = "This plan isn't available yet. Install the app from Google Play and set up the products in Play Console."
-            connect()
+            if (c?.isReady != true) connect()
             return
         }
-        val builder = BillingFlowParams.ProductDetailsParams.newBuilder().setProductDetails(d)
-        if (plan.isSubscription) {
-            val token = d.subscriptionOfferDetails?.firstOrNull()?.offerToken ?: return
-            builder.setOfferToken(token)
+        val flow = BillingFlowParams.newBuilder()
+            .setProductDetailsParamsList(
+                listOf(
+                    BillingFlowParams.ProductDetailsParams.newBuilder()
+                        .setProductDetails(d)
+                        .setOfferToken(token)
+                        .build()
+                )
+            )
+            .build()
+        val result = c.launchBillingFlow(activity, flow)
+        if (result.responseCode != BillingClient.BillingResponseCode.OK) {
+            message.value = "Purchase failed (${result.debugMessage.ifEmpty { result.responseCode.toString() }})"
         }
-        c.launchBillingFlow(activity, BillingFlowParams.newBuilder().setProductDetailsParamsList(listOf(builder.build())).build())
     }
 
     private fun setPurchased(v: Boolean) {
         Prefs.premiumPurchased = v
-        isPremium.value = v || Prefs.premiumDebug
+        refresh()
     }
+
+    /** Rewarded-ad unlock. Kept separate from a Play purchase so restore cannot clear it. */
+    fun grantFromAd() {
+        Prefs.premiumAdUntil = System.currentTimeMillis() + AD_UNLOCK_MS
+        refresh()
+    }
+
+    fun refresh() {
+        isPremium.value = adsHidden()
+    }
+
+    fun adsHidden(): Boolean =
+        Prefs.premiumPurchased || Prefs.premiumDebug || System.currentTimeMillis() < Prefs.premiumAdUntil
 
     /** Debug builds only: lets you test premium screens without a Play account. */
     fun setDebugPremium(v: Boolean) {
         Prefs.premiumDebug = v
-        isPremium.value = v || Prefs.premiumPurchased
+        refresh()
     }
 
     /** Free users can only send files up to 100 MB each. */

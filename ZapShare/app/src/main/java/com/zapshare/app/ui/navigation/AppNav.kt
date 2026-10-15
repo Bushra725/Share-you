@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -40,6 +41,7 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Widgets
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -97,8 +99,18 @@ import com.zapshare.app.ui.screens.PermissionsScreen
 import com.zapshare.app.ui.screens.PlayerScreen
 import com.zapshare.app.ui.screens.PreviewScreen
 import com.zapshare.app.ui.screens.PremiumScreen
+import com.zapshare.app.ui.screens.CleanHubScreen
+import com.zapshare.app.ui.screens.NotificationBlockerScreen
+import com.zapshare.app.ui.screens.AppCleanScreen
+import com.zapshare.app.ui.screens.BigFilesScreen
+import com.zapshare.app.ui.screens.DuplicatesScreen
+import com.zapshare.app.ui.screens.MediaCleanScreen
+import com.zapshare.app.ui.screens.CleanGroupScreen
+import com.zapshare.app.ui.screens.ChatCleanScreen
 import com.zapshare.app.ui.screens.ReceiveScreen
 import com.zapshare.app.ui.screens.SafeboxScreen
+import com.zapshare.app.ui.screens.ScanListScreen
+import com.zapshare.app.ui.screens.StorageScanScreen
 import com.zapshare.app.ui.screens.SearchScreen
 import com.zapshare.app.ui.screens.SelectFilesScreen
 import com.zapshare.app.ui.screens.SendConnectScreen
@@ -126,6 +138,9 @@ object Routes {
     const val CATEGORY = "category/{cat}"
     const val BROWSER = "browser"
     const val LARGE = "large"
+    const val SCAN = "scan"
+    const val SCAN_LIST = "scan/{kind}"
+    fun scanList(kind: String) = "scan/$kind"
     const val SEARCH = "search"
     const val APPS = "apps"
     const val PREVIEW = "preview?uri={uri}&name={name}&mime={mime}"
@@ -136,6 +151,18 @@ object Routes {
     const val SAFEBOX = "safebox"
     const val SETTINGS = "settings"
     const val PREMIUM = "premium"
+
+    const val CLEAN = "clean"
+    const val CLEAN_NOTIFY = "clean_notify"
+    const val CLEAN_APPS = "clean_apps"
+    const val CLEAN_BIG = "clean_big"
+    const val CLEAN_DUPES = "clean_dupes"
+    const val CLEAN_MEDIA = "clean_media/{kind}"
+    const val CLEAN_GROUP = "clean_group/{kind}/{id}"
+    const val CLEAN_CHAT = "clean_chat/{app}"
+    fun cleanMedia(kind: String) = "clean_media/$kind"
+    fun cleanGroup(kind: String, id: String) = "clean_group/$kind/$id"
+    fun cleanChat(app: String) = "clean_chat/$app"
 
     fun select(mode: String) = "select/$mode"
     fun category(c: FileCategory) = "category/${c.name}"
@@ -254,7 +281,7 @@ fun ZapShareApp() {
         NavHost(
             navController = nav,
             startDestination = if (Prefs.onboarded) Routes.HOME else Routes.PERMS,
-            modifier = Modifier.padding(padding).consumeWindowInsets(padding)
+            modifier = Modifier.padding(padding).consumeWindowInsets(padding).fillMaxSize()
         ) {
             val back: () -> Unit = { nav.popBackStack() }
             composable(Routes.PERMS) {
@@ -285,6 +312,10 @@ fun ZapShareApp() {
             }
             composable(Routes.BROWSER) { BrowserScreen(nav) }
             composable(Routes.LARGE) { LargeFilesScreen(nav) }
+            composable(Routes.SCAN) { StorageScanScreen(nav) }
+            composable(Routes.SCAN_LIST, arguments = listOf(navArgument("kind") { type = NavType.StringType })) {
+                ScanListScreen(nav, it.arguments?.getString("kind") ?: "all")
+            }
             composable(Routes.SEARCH) { SearchScreen(nav) }
             composable(Routes.APPS) { AppsScreen(nav) }
             composable(
@@ -313,6 +344,24 @@ fun ZapShareApp() {
             composable(Routes.SAFEBOX) { SafeboxScreen(nav) }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
             composable(Routes.PREMIUM) { PremiumScreen(nav) }
+
+            composable(Routes.CLEAN) { CleanHubScreen(nav) }
+            composable(Routes.CLEAN_NOTIFY) { NotificationBlockerScreen(nav) }
+            composable(Routes.CLEAN_APPS) { AppCleanScreen(nav) }
+            composable(Routes.CLEAN_BIG) { BigFilesScreen(nav) }
+            composable(Routes.CLEAN_DUPES) { DuplicatesScreen(nav) }
+            composable(Routes.CLEAN_MEDIA, arguments = listOf(navArgument("kind") { type = NavType.StringType })) {
+                MediaCleanScreen(nav, it.arguments?.getString("kind") ?: "photo")
+            }
+            composable(
+                Routes.CLEAN_GROUP,
+                arguments = listOf(navArgument("kind") { type = NavType.StringType }, navArgument("id") { type = NavType.StringType })
+            ) {
+                CleanGroupScreen(nav, it.arguments?.getString("kind") ?: "photo", it.arguments?.getString("id") ?: "")
+            }
+            composable(Routes.CLEAN_CHAT, arguments = listOf(navArgument("app") { type = NavType.StringType })) {
+                ChatCleanScreen(nav, it.arguments?.getString("app") ?: "whatsapp")
+            }
         }
     }
 }
@@ -329,7 +378,12 @@ private fun FeatureExitAd(nav: NavHostController, ctx: android.content.Context) 
             val to = dest.route
             previous = to
             val leftFeature = from != null && from !in mainTabs && from != Routes.PREMIUM && from != Routes.PERMS
-            if (leftFeature && to in mainTabs) ctx.findActivity()?.let { Ads.show(it) }
+            if (leftFeature && to in mainTabs) ctx.findActivity()?.let { activity ->
+                activity.window.decorView.post {
+                    activity.window.decorView.requestLayout()
+                    Ads.show(activity)
+                }
+            }
         }
         nav.addOnDestinationChangedListener(listener)
         onDispose { nav.removeOnDestinationChangedListener(listener) }
@@ -362,6 +416,7 @@ private fun MiniPlayer(onOpen: () -> Unit) {
                     Text(np.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                IconButton(onClick = { MusicController.previous() }) { Icon(Icons.Filled.SkipPrevious, "Previous") }
                 IconButton(onClick = { MusicController.toggle() }) {
                     Icon(if (np.isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow, "Play/pause")
                 }

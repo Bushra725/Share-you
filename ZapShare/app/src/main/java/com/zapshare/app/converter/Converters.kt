@@ -10,22 +10,16 @@ import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
 import android.graphics.pdf.PdfRenderer
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
-import com.zapshare.app.downloader.VideoDownloader
 import com.zapshare.app.util.FileUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.nio.ByteBuffer
 
 /** All conversions run 100% on-device. Output goes to Download/ZapShare/Converted. */
 object Converters {
@@ -184,19 +178,25 @@ object Converters {
     suspend fun convertMedia(
         ctx: Context, uri: Uri, name: String, preset: MediaPreset, durationMs: Long, onProgress: (Float) -> Unit
     ): Uri = withContext(Dispatchers.IO) {
-        val input = FileUtils.copyToCache(ctx, uri, name)
+        val input = try {
+            FileUtils.copyToCache(ctx, uri, cacheName(name, uri))
+        } catch (e: Exception) {
+            throw IllegalStateException("Could not open this file. Select it again.")
+        }
+        if (input.length() == 0L) {
+            input.delete()
+            throw IllegalStateException("This file is empty.")
+        }
         val outFile = File(input.parentFile, input.nameWithoutExtension + "_out." + preset.ext)
         try {
-            val ffmpegOk = VideoDownloader.awaitReady() && FfmpegRunner.available(ctx)
-            if (ffmpegOk) {
+            if (FfmpegRunner.available(ctx)) {
                 val args = listOf("-y", "-i", input.absolutePath) + preset.args + outFile.absolutePath
                 val code = FfmpegRunner.run(ctx, args, durationMs, onProgress)
-                if (code != 0 || !outFile.exists() || outFile.length() == 0L) throw IllegalStateException("FFmpeg failed (code $code)")
-            } else if (preset == MediaPreset.TO_M4A) {
-                extractAudioTrack(input, outFile)   // pure Android fallback
+                if (code != 0 || !outFile.exists() || outFile.length() == 0L) throw IllegalStateException("Could not convert this file.")
             } else {
-                throw IllegalStateException("Media engine not available on this device")
+                DeviceMedia.convert(input, outFile, preset, durationMs, onProgress)
             }
+            if (!outFile.exists() || outFile.length() == 0L) throw IllegalStateException("Conversion produced an empty file.")
             val outName = name.substringBeforeLast('.') + "." + preset.ext
             FileUtils.copyToDownloads(ctx, Uri.fromFile(outFile), outName, FileUtils.mimeOf(outName), OUT)
         } finally {
@@ -204,33 +204,12 @@ object Converters {
         }
     }
 
-    /** Copies the AAC audio track out of an MP4 without re-encoding (no FFmpeg needed). */
-    private fun extractAudioTrack(input: File, output: File) {
-        val ex = MediaExtractor()
-        ex.setDataSource(input.absolutePath)
-        var track = -1
-        var fmt: MediaFormat? = null
-        for (i in 0 until ex.trackCount) {
-            val f = ex.getTrackFormat(i)
-            if (f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/mp4a") == true) { track = i; fmt = f; break }
-        }
-        if (track < 0 || fmt == null) { ex.release(); throw IllegalStateException("No AAC audio track found") }
-        ex.selectTrack(track)
-        val mux = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        val dst = mux.addTrack(fmt)
-        mux.start()
-        val buf = ByteBuffer.allocate(1 shl 20)
-        val info = MediaCodec.BufferInfo()
-        while (true) {
-            info.offset = 0
-            info.size = ex.readSampleData(buf, 0)
-            if (info.size < 0) break
-            info.presentationTimeUs = ex.sampleTime
-            info.flags = if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-            mux.writeSampleData(dst, buf, info)
-            ex.advance()
-        }
-        mux.stop(); mux.release(); ex.release()
+    private fun cacheName(name: String, uri: Uri): String {
+        val base = name.substringAfterLast('/').substringAfterLast('\\').ifBlank { "media" }
+        if ('.' in base && !base.endsWith('.')) return base
+        val fromUri = uri.lastPathSegment?.substringAfterLast('.', "")?.substringBefore('?').orEmpty()
+        val ext = if (fromUri.isNotEmpty() && fromUri.length <= 5 && fromUri != base) fromUri else "mp4"
+        return "$base.$ext"
     }
 }
 

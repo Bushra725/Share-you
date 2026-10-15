@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,7 +50,6 @@ import com.google.android.gms.ads.nativead.NativeAdView
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import com.zapshare.app.R
-import com.zapshare.app.data.Prefs
 
 object Ads {
     const val BANNER_UNIT_ID = "ca-app-pub-9297250663056879/6703538283"
@@ -67,9 +67,10 @@ object Ads {
     private var showingFullScreen = false
     private var lastShown = 0L
     private var resumed: Activity? = null
+    private var rewardWait: RewardRequest? = null
     private const val COOLDOWN_MS = 30_000L
 
-    private fun adsOff() = Prefs.premiumPurchased
+    private fun adsOff() = Premium.adsHidden()
 
     fun init(ctx: Context) {
         val app = ctx.applicationContext
@@ -118,12 +119,21 @@ object Ads {
         loadingRewarded = true
         RewardedAd.load(ctx, REWARDED_UNIT_ID, AdRequest.Builder().build(), object : RewardedAdLoadCallback() {
             override fun onAdLoaded(ad: RewardedAd) {
-                rewarded = ad
                 loadingRewarded = false
+                val wait = rewardWait
+                if (wait != null && !wait.activity.isFinishing) {
+                    rewardWait = null
+                    presentRewarded(wait.activity, ad, wait.onReward, wait.onUnavailable)
+                } else {
+                    rewarded = ad
+                }
             }
             override fun onAdFailedToLoad(error: LoadAdError) {
                 rewarded = null
                 loadingRewarded = false
+                val wait = rewardWait
+                rewardWait = null
+                wait?.activity?.runOnUiThread { wait.onUnavailable() }
             }
         })
     }
@@ -162,6 +172,7 @@ object Ads {
         ad.fullScreenContentCallback = object : FullScreenContentCallback() {
             override fun onAdDismissedFullScreenContent() {
                 showingFullScreen = false
+                runCatching { activity.window.decorView.post { activity.window.decorView.requestLayout() } }
                 preload(activity)
             }
             override fun onAdFailedToShowFullScreenContent(error: AdError) {
@@ -173,13 +184,22 @@ object Ads {
     }
 
     /** Rewarded video. [onReward] runs only after the viewer earns the reward. */
-    fun showRewarded(activity: Activity, onReward: () -> Unit) {
-        if (adsOff() || activity.isFinishing) return
-        val ad = rewarded
-        if (ad == null) {
-            loadRewarded(activity)
+    fun showRewarded(activity: Activity, onReward: () -> Unit, onUnavailable: () -> Unit = {}) {
+        if (activity.isFinishing) return
+        if (adsOff()) {
+            onReward()
             return
         }
+        val ad = rewarded
+        if (ad == null) {
+            rewardWait = RewardRequest(activity, onReward, onUnavailable)
+            if (!loadingRewarded) loadRewarded(activity)
+            return
+        }
+        presentRewarded(activity, ad, onReward, onUnavailable)
+    }
+
+    private fun presentRewarded(activity: Activity, ad: RewardedAd, onReward: () -> Unit, onUnavailable: () -> Unit) {
         rewarded = null
         showingFullScreen = true
         lastShown = SystemClock.elapsedRealtime()
@@ -191,10 +211,17 @@ object Ads {
             override fun onAdFailedToShowFullScreenContent(error: AdError) {
                 showingFullScreen = false
                 loadRewarded(activity)
+                activity.runOnUiThread { onUnavailable() }
             }
         }
-        ad.show(activity) { onReward() }
+        ad.show(activity) { activity.runOnUiThread { onReward() } }
     }
+
+    private class RewardRequest(
+        val activity: Activity,
+        val onReward: () -> Unit,
+        val onUnavailable: () -> Unit
+    )
 
     private fun showAppOpen(activity: Activity) {
         if (adsOff() || activity.isFinishing || showingFullScreen) return
@@ -223,7 +250,8 @@ object Ads {
 /** Banner ad with a link to Premium. Hidden after a real Premium purchase. */
 @Composable
 fun AdBanner(onRemoveAds: () -> Unit, modifier: Modifier = Modifier) {
-    if (Prefs.premiumPurchased) return
+    val premium by Premium.isPremium.collectAsState()
+    if (premium) return
     val widthDp = LocalConfiguration.current.screenWidthDp
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         AndroidView(
@@ -249,7 +277,8 @@ fun AdBanner(onRemoveAds: () -> Unit, modifier: Modifier = Modifier) {
 /** Native ad for the home screen. */
 @Composable
 fun NativeAdCard(modifier: Modifier = Modifier) {
-    if (Prefs.premiumPurchased) return
+    val premium by Premium.isPremium.collectAsState()
+    if (premium) return
     val context = LocalContext.current
     var nativeAd by remember { mutableStateOf<NativeAd?>(null) }
     DisposableEffect(Unit) {
@@ -260,7 +289,16 @@ fun NativeAdCard(modifier: Modifier = Modifier) {
         loader.loadAd(AdRequest.Builder().build())
         onDispose { nativeAd?.destroy() }
     }
-    val ad = nativeAd ?: return
+    val ad = nativeAd
+    if (ad == null) {
+        Text(
+            "Ad",
+            modifier = modifier.fillMaxWidth().padding(vertical = 8.dp),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        return
+    }
     AndroidView(
         modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
         factory = { ctx ->

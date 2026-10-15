@@ -3,11 +3,13 @@
 package com.zapshare.app.ui.screens
 
 import android.content.Context
+import android.content.Intent
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +20,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,6 +29,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Collections
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.PictureAsPdf
@@ -54,7 +58,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavController
 import com.zapshare.app.converter.Converters
 import com.zapshare.app.ui.components.GradientButton
@@ -66,6 +73,7 @@ import com.zapshare.app.ui.theme.CatDocs
 import com.zapshare.app.ui.theme.CatMusic
 import com.zapshare.app.ui.theme.CatPdf
 import com.zapshare.app.ui.theme.CatPhoto
+import com.zapshare.app.ui.theme.CatVideo
 import com.zapshare.app.ui.theme.Cyan3
 import com.zapshare.app.util.FileUtils
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -118,7 +126,14 @@ fun ConverterScreen(nav: NavController) {
         val name = FileUtils.queryMeta(ctx, uri).name
         ConverterJob.run("Text → PDF") { _ -> "Created ${name.substringBeforeLast('.')}.pdf" to Converters.textToPdf(ctx, uri, name) }
     }
-    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { if (it != null) mediaUri = it }
+    val pickMedia = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            runCatching {
+                ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            mediaUri = uri
+        }
+    }
 
     ZapScaffold("File converter", onBack = { nav.popBackStack() }) { pad ->
         Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -224,28 +239,94 @@ private fun ImageOptionsDialog(ctx: Context, uris: List<Uri>, onClose: () -> Uni
     )
 }
 
+private data class OutputFormat(
+    val preset: Converters.MediaPreset,
+    val badge: String,
+    val detail: String,
+    val audio: Boolean
+)
+
+private val outputFormats = listOf(
+    OutputFormat(Converters.MediaPreset.TO_MP3, "MP3", "Sound only, plays everywhere", audio = true),
+    OutputFormat(Converters.MediaPreset.TO_M4A, "M4A", "AAC audio, smaller than WAV", audio = true),
+    OutputFormat(Converters.MediaPreset.TO_WAV, "WAV", "Uncompressed audio", audio = true),
+    OutputFormat(Converters.MediaPreset.TO_OGG, "OGG", "Compressed audio", audio = true),
+    OutputFormat(Converters.MediaPreset.TO_MP4, "MP4", "Standard video, H.264", audio = false),
+    OutputFormat(Converters.MediaPreset.COMPRESS_720, "720p", "Smaller video, good quality", audio = false),
+    OutputFormat(Converters.MediaPreset.COMPRESS_480, "480p", "Smallest video file", audio = false),
+    OutputFormat(Converters.MediaPreset.TO_GIF, "GIF", "First 10 seconds, no sound", audio = false),
+    OutputFormat(Converters.MediaPreset.TO_MKV, "MKV", "New container, same quality", audio = false),
+)
+
 @Composable
 private fun MediaOptionsDialog(ctx: Context, uri: Uri, onClose: () -> Unit) {
     val meta = remember(uri) { FileUtils.queryMeta(ctx, uri) }
+    var selected by remember { mutableStateOf(outputFormats.first()) }
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text(meta.name, maxLines = 2) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
-                Converters.MediaPreset.entries.forEach { p ->
-                    Text(p.label, Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable {
-                        onClose()
-                        ConverterJob.run(p.label) { report ->
-                            val dur = durationOf(ctx, uri)
-                            val out = Converters.convertMedia(ctx, uri, meta.name, p, dur, report)
-                            "Saved ${meta.name.substringBeforeLast('.')}.${p.ext}" to out
-                        }
-                    }.padding(12.dp))
-                }
+        title = {
+            Column {
+                Text("Choose output format")
+                Text(
+                    meta.name,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
-        confirmButton = { TextButton(onClick = onClose) { Text("Cancel") } }
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                FormatGroup("Audio", outputFormats.filter { it.audio }, selected) { selected = it }
+                FormatGroup("Video", outputFormats.filter { !it.audio }, selected) { selected = it }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val choice = selected
+                onClose()
+                ConverterJob.run("Converting to ${choice.badge}") { report ->
+                    val dur = durationOf(ctx, uri)
+                    val out = Converters.convertMedia(ctx, uri, meta.name, choice.preset, dur, report)
+                    "Saved ${meta.name.substringBeforeLast('.')}.${choice.preset.ext}" to out
+                }
+            }) { Text("Convert") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } }
     )
+}
+
+@Composable
+private fun FormatGroup(title: String, formats: List<OutputFormat>, selected: OutputFormat, onSelect: (OutputFormat) -> Unit) {
+    Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    formats.forEach { format ->
+        val on = format == selected
+        val tint = if (format.audio) CatMusic else CatVideo
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .border(1.5.dp, if (on) Cyan3 else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                .background(if (on) Cyan3.copy(alpha = 0.12f) else Color.Transparent)
+                .clickable { onSelect(format) }
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(tint),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(format.badge, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp, maxLines = 1)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(format.badge, fontWeight = FontWeight.SemiBold)
+                Text(format.detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (on) Icon(Icons.Filled.CheckCircle, "Selected", tint = Cyan3)
+        }
+    }
 }
 
 private fun durationOf(ctx: Context, uri: Uri): Long = runCatching {

@@ -27,6 +27,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -53,6 +55,9 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.automirrored.filled.ManageSearch
+import androidx.compose.material.icons.filled.NewReleases
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
@@ -64,6 +69,7 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Transform
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
@@ -75,6 +81,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -89,6 +96,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -98,6 +106,7 @@ import com.zapshare.app.data.FileCategory
 import com.zapshare.app.data.MediaFile
 import com.zapshare.app.data.MediaRepository
 import com.zapshare.app.data.MediaRepository.toMediaFile
+import com.zapshare.app.data.StorageScan
 import com.zapshare.app.player.MusicController
 import com.zapshare.app.ui.components.AppIcon
 import com.zapshare.app.ui.components.EmptyState
@@ -118,7 +127,9 @@ import com.zapshare.app.ui.theme.CatPhoto
 import com.zapshare.app.ui.theme.CatSafe
 import com.zapshare.app.ui.theme.CatVideo
 import com.zapshare.app.premium.AdBanner
+import com.zapshare.app.ui.theme.BrandGradient
 import com.zapshare.app.ui.theme.Cyan3
+import com.zapshare.app.ui.theme.Navy
 import com.zapshare.app.util.FileUtils
 import com.zapshare.app.util.Permissions
 import kotlinx.coroutines.Dispatchers
@@ -245,6 +256,7 @@ fun FilesScreen(nav: NavController) {
                 "videos" to MediaRepository.videos(ctx).size,
                 "photos" to MediaRepository.images(ctx).size,
                 "docs" to MediaRepository.documents(ctx).size,
+                "zips" to MediaRepository.archives(ctx).size,
                 "received" to MediaRepository.received(ctx).size,
                 "apps" to MediaRepository.apps(ctx).size,
             )
@@ -273,25 +285,30 @@ fun FilesScreen(nav: NavController) {
                     Triple(Icons.Filled.Movie, "Videos", CatVideo) to { nav.navigate(Routes.category(FileCategory.VIDEO)) },
                     Triple(Icons.Filled.Image, "Photos", CatPhoto) to { nav.navigate(Routes.category(FileCategory.IMAGE)) },
                     Triple(Icons.Filled.Description, "Documents", CatDocs) to { nav.navigate(Routes.category(FileCategory.DOCUMENT)) },
+                    Triple(Icons.Filled.FolderZip, "ZIP", Color(0xFFD97706)) to { nav.navigate(Routes.category(FileCategory.ARCHIVE)) },
                     Triple(Icons.Filled.Transform, "Converter", Color(0xFFEF4444)) to { nav.navigate(Routes.CONVERTER) },
                     Triple(Icons.Filled.Lock, "Safebox", CatSafe) to { nav.navigate(Routes.SAFEBOX) },
                     Triple(Icons.Filled.Download, "Received", CatDownload) to { nav.navigate(Routes.category(FileCategory.OTHER)) },
                 )
-                val badges = listOf(c("music"), c("apps"), c("videos"), c("photos"), c("docs"), "", "", c("received"))
+                val badges = listOf(c("music"), c("apps"), c("videos"), c("photos"), c("docs"), c("zips"), "", "", c("received"))
                 tiles.chunked(4).forEachIndexed { r, row ->
                     Row(Modifier.fillMaxWidth()) {
                         row.forEachIndexed { i, (t, click) ->
                             com.zapshare.app.ui.components.ToolTile(t.first, t.second, t.third, Modifier.weight(1f),
                                 badge = badges[r * 4 + i].ifEmpty { null }, onClick = click)
                         }
+                        repeat(4 - row.size) { Spacer(Modifier.weight(1f)) }
                     }
                 }
             }
-            StorageCard { nav.navigate(Routes.BROWSER) }
+            Row(Modifier.height(IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(Modifier.weight(1f)) { StorageCard { nav.navigate(Routes.BROWSER) } }
+                ScanButton(Modifier.width(96.dp).fillMaxHeight()) { nav.navigate(Routes.SCAN) }
+            }
             com.zapshare.app.premium.AdBanner(onRemoveAds = { nav.navigate(Routes.PREMIUM) })
             SectionCard(padding = 4.dp) {
                 MenuRow(Icons.Filled.FolderOpen, "Browse internal storage") { nav.navigate(Routes.BROWSER) }
-                MenuRow(Icons.Filled.CleaningServices, "Clean large files", "Find what fills up your phone") { nav.navigate(Routes.LARGE) }
+                MenuRow(Icons.Filled.CleaningServices, "Phone Cleaner", "Big files, duplicates, WhatsApp, apps & more") { nav.navigate(Routes.CLEAN) }
             }
             SectionCard {
                 Text("Recent files", style = MaterialTheme.typography.titleMedium)
@@ -317,7 +334,11 @@ fun CategoryScreen(nav: NavController, cat: FileCategory) {
     val deleter = rememberDeleter { selected.clear(); reload++ }
     val selecting = selected.isNotEmpty()
     BackHandler(selecting) { selected.clear() }
-    val title = if (cat == FileCategory.OTHER) "Received" else cat.label
+    val title = when (cat) {
+        FileCategory.OTHER -> "Received"
+        FileCategory.ARCHIVE -> "ZIP"
+        else -> cat.label
+    }
 
     ZapScaffold(
         if (selecting) "${selected.size} selected" else title,
@@ -520,6 +541,172 @@ fun BrowserScreen(nav: NavController) {
             confirmButton = { TextButton(onClick = { File(dir, FileUtils.safeName(name)).mkdirs(); newFolder = false; reload++ }) { Text("Create") } },
             dismissButton = { TextButton(onClick = { newFolder = false }) { Text("Cancel") } }
         )
+    }
+}
+
+@Composable
+private fun ScanButton(modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(20.dp)).background(BrandGradient).clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.AutoMirrored.Filled.ManageSearch, "Scan", tint = Navy, modifier = Modifier.size(32.dp))
+        Spacer(Modifier.height(8.dp))
+        Text("Scan", color = Navy, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun StorageScanScreen(nav: NavController) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val scanning by StorageScan.scanning.collectAsState()
+    val status by StorageScan.status.collectAsState()
+    val report by StorageScan.report.collectAsState()
+    LaunchedEffect(Unit) {
+        if (StorageScan.report.value == null) StorageScan.run(ctx)
+    }
+    ZapScaffold("Storage scan", onBack = { nav.popBackStack() }, actions = {
+        if (!scanning) TextButton(onClick = { scope.launch { StorageScan.run(ctx) } }) { Text("Rescan") }
+    }) { pad ->
+        Column(
+            Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            val current = report
+            if (scanning || current == null) {
+                Column(Modifier.fillMaxWidth().padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = Cyan3)
+                    Spacer(Modifier.height(16.dp))
+                    Text(status, style = MaterialTheme.typography.titleMedium)
+                    Text("Scanning stays on this phone.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                Text("Scan report", style = MaterialTheme.typography.titleMedium)
+                ScanStat(Icons.Filled.Folder, "All files", "${current.all.size} files", FileUtils.formatSize(current.allSize), Cyan3) {
+                    nav.navigate(Routes.scanList("all"))
+                }
+                ScanStat(Icons.Filled.CleaningServices, "Junk files", "${current.junk.size} files", FileUtils.formatSize(current.junkSize), Color(0xFFEF4444)) {
+                    nav.navigate(Routes.scanList("junk"))
+                }
+                ScanStat(Icons.Filled.NewReleases, "New files", "${current.fresh.size} files", "Last 7 days • ${FileUtils.formatSize(current.freshSize)}", Color(0xFF16A34A)) {
+                    nav.navigate(Routes.scanList("new"))
+                }
+                Text(
+                    "Junk is cache, temporary files, and thumbnails. Tap Junk files to choose what to remove.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (!Permissions.hasAllFiles()) {
+                    SectionCard {
+                        Text("Allow all-files access to include app cache in this scan.", style = MaterialTheme.typography.bodyMedium)
+                        TextButton(onClick = { ctx.startActivity(Permissions.allFilesIntent(ctx)) }) { Text("Allow access") }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScanStat(icon: ImageVector, title: String, count: String, detail: String, tint: Color, onClick: () -> Unit) {
+    SectionCard(Modifier.clickable(onClick = onClick)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(44.dp).clip(RoundedCornerShape(12.dp)).background(tint), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = Color.White)
+            }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.titleMedium)
+                Text("$count • $detail", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+fun ScanListScreen(nav: NavController, kind: String) {
+    val ctx = LocalContext.current
+    val report by StorageScan.report.collectAsState()
+    val files = when (kind) {
+        "junk" -> report?.junk
+        "new" -> report?.fresh
+        else -> report?.all
+    }
+    val title = when (kind) {
+        "junk" -> "Junk files"
+        "new" -> "New files"
+        else -> "All files"
+    }
+    val selectable = kind == "junk"
+    val selected = remember(kind) { mutableStateListOf<MediaFile>() }
+    val deleter = rememberDeleter {
+        selected.clear()
+        appScope.launch { StorageScan.dropGone(ctx) }
+    }
+    BackHandler(selectable && selected.isNotEmpty()) { selected.clear() }
+    ZapScaffold(title, onBack = { if (selectable && selected.isNotEmpty()) selected.clear() else nav.popBackStack() }, actions = {
+        if (selectable && files != null) {
+            IconButton(onClick = {
+                selected.clear()
+                files.let { selected.addAll(it) }
+            }) { Icon(Icons.Filled.SelectAll, "Select all") }
+        }
+    }, bottomBar = {
+        if (selectable && selected.isNotEmpty()) Box(Modifier.padding(16.dp)) {
+            GradientButton(
+                "Clean ${selected.size} • free ${FileUtils.formatSize(selected.sumOf { it.size })}",
+                { deleter(selected.map { it.uri }) },
+                Modifier.fillMaxWidth(),
+                icon = Icons.Filled.Delete
+            )
+        }
+    }) { pad ->
+        val list = files
+        Box(Modifier.padding(pad).fillMaxSize()) {
+            when {
+                list == null -> EmptyState(Icons.AutoMirrored.Filled.ManageSearch, "Scan storage from the Files tab first.")
+                list.isEmpty() -> EmptyState(
+                    if (kind == "junk") Icons.Filled.CleaningServices else Icons.Filled.Folder,
+                    if (kind == "junk") "No junk files found." else "Nothing in this list."
+                )
+                else -> LazyColumn(contentPadding = PaddingValues(12.dp)) {
+                    item {
+                        Text(
+                            "${list.size} files • ${FileUtils.formatSize(list.sumOf { it.size })}",
+                            style = MaterialTheme.typography.labelLarge,
+                            modifier = Modifier.padding(8.dp)
+                        )
+                        if (selectable) Text(
+                            "Tap files to select them, then clean. Long-press opens a file.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                    items(list, key = { "${it.uri}|${it.path}|${it.size}|${it.dateModified}" }) { f ->
+                        val sel = f in selected
+                        val sub = buildString {
+                            append(FileUtils.formatSize(f.size))
+                            f.path?.substringBeforeLast('/')?.substringAfterLast('/')?.let { folder ->
+                                if (folder.isNotBlank()) append(" • $folder")
+                            }
+                        }
+                        FileRow(
+                            f.uri, f.name, f.mime, sub,
+                            selected = if (selectable) sel else null,
+                            onLongClick = { openFile(nav, ctx, f, list) }
+                        ) {
+                            if (selectable) {
+                                if (sel) selected.remove(f) else selected.add(f)
+                            } else openFile(nav, ctx, f, list)
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 

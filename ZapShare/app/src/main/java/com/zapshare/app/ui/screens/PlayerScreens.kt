@@ -8,6 +8,8 @@ import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
 import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +59,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -113,6 +116,11 @@ fun Context.findActivity(): Activity? {
 fun PlayerScreen(nav: NavController) {
     val ctx = LocalContext.current
     var tab by remember { mutableIntStateOf(0) }
+    val askNotif = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
+    LaunchedEffect(Unit) {
+        val perms = Permissions.notifications()
+        if (perms.isNotEmpty() && !Permissions.granted(ctx, perms)) askNotif.launch(perms)
+    }
     ZapScaffold("Player") { pad ->
         Column(Modifier.padding(pad)) {
             SecondaryTabRow(selectedTabIndex = tab, containerColor = MaterialTheme.colorScheme.background) {
@@ -214,6 +222,10 @@ fun NowPlayingScreen(onBack: () -> Unit) {
             Text(np.title.ifEmpty { "Nothing playing" }, style = MaterialTheme.typography.titleLarge, maxLines = 2,
                 overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center)
             Text(np.artist, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!np.error.isNullOrBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(np.error ?: "", color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+            }
             Spacer(Modifier.height(16.dp))
             val dur = np.duration.coerceAtLeast(1)
             Slider(

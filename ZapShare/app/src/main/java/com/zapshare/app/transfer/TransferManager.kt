@@ -49,6 +49,8 @@ object TransferManager {
 
     private val pendingBytes = ConcurrentHashMap<String, AtomicLong>()
     private val windowBytes = AtomicLong(0)
+    /** share key -> connection that first delivered it in this group session */
+    private val groupFiles = ConcurrentHashMap<String, String>()
     private var ticker: Job? = null
     private var smoothed = 0.0
 
@@ -73,7 +75,7 @@ object TransferManager {
             server = ss
             var ip: String? = null
             for (i in 0 until 10) {
-                ip = NetUtils.bestLocalIp(preferHotspot = useHotspot)
+                ip = NetUtils.bestLocalIp(preferHotspot = useHotspot, ctx = context)
                 if (ip != null) break
                 delay(500)
             }
@@ -177,6 +179,7 @@ object TransferManager {
         for (share in list) {
             var uri = share.uri
             var size = share.size
+            val shareKey = UUID.randomUUID().toString()
             if (size <= 0) {   // unknown size (some content providers): stage in cache first
                 try {
                     val f = FileUtils.copyToCache(context, share.uri, share.name)
@@ -190,8 +193,11 @@ object TransferManager {
                 continue
             }
             for (p in targets) {
-                val item = TransferItem(UUID.randomUUID().toString(), share.name, size, share.mime,
-                    Direction.SEND, p.id, p.name)
+                val item = TransferItem(
+                    UUID.randomUUID().toString(), share.name, size, share.mime,
+                    Direction.SEND, p.id, p.name,
+                    shareKey = shareKey, originName = Prefs.deviceName
+                )
                 items.update { it + item }
                 p.enqueueFile(item, uri)
             }
@@ -238,9 +244,25 @@ object TransferManager {
             status = if (direct.isEmpty()) it.status else "Connected") }
     }
 
-    internal fun startIncoming(p: Peer, name: String, size: Long, mime: String): TransferItem {
-        val item = TransferItem(UUID.randomUUID().toString(), name, size, mime, Direction.RECEIVE, p.id, p.name,
-            status = ItemStatus.ACTIVE)
+    /**
+     * One shared file should arrive once. A second delivery of the same share from
+     * another phone (the host forwarding it again) is ignored.
+     */
+    internal fun claimGroupFile(key: String, peerId: String): Boolean {
+        if (!session.value.group || key.isBlank()) return true
+        val owner = groupFiles.putIfAbsent(key, peerId)
+        return owner == null || owner == peerId
+    }
+
+    internal fun startIncoming(
+        p: Peer, name: String, size: Long, mime: String,
+        origin: String, shareKey: String, relay: Boolean, relayPath: String?
+    ): TransferItem {
+        val shown = origin.ifBlank { p.name }
+        val item = TransferItem(
+            UUID.randomUUID().toString(), name, size, mime, Direction.RECEIVE, p.id, shown,
+            status = ItemStatus.ACTIVE, shareKey = shareKey, originName = shown, relay = relay, relayPath = relayPath
+        )
         items.update { it + item }
         return item
     }
@@ -254,6 +276,10 @@ object TransferManager {
 
     internal fun markFailed(id: String, err: String) {
         pendingBytes.remove(id)
+        val failed = items.value.find { it.id == id }
+        if (failed != null && failed.direction == Direction.RECEIVE && failed.shareKey.isNotBlank()) {
+            groupFiles.remove(failed.shareKey, failed.peerId)
+        }
         setStatus(id) { it.copy(status = ItemStatus.FAILED, error = err) }
     }
 
@@ -265,18 +291,30 @@ object TransferManager {
 
     internal fun markReceived(from: Peer, item: TransferItem, uri: Uri) {
         pendingBytes.remove(item.id)
-        setStatus(item.id) { it.copy(status = ItemStatus.DONE, transferred = it.size, resultUri = uri) }
-        HistoryStore.add(item.name, item.size, item.mime, false, from.name, uri)
-        // Group relay: host forwards to every other member.
         val s = session.value
-        if (s.role == Role.HOST && s.group && Prefs.groupRelay &&
+        setStatus(item.id) { it.copy(status = ItemStatus.DONE, transferred = it.size, resultUri = uri) }
+        if (s.group && item.shareKey.isNotBlank()) {
+            items.update { list ->
+                list.filterNot {
+                    it.id != item.id && it.shareKey == item.shareKey && it.direction == Direction.RECEIVE &&
+                        it.status == ItemStatus.FAILED
+                }
+            }
+        }
+        HistoryStore.add(item.name, item.size, item.mime, false, item.peerName, uri)
+        val source = item.relayPath?.let { path -> File(path).takeIf { it.isFile && it.length() == item.size } }
+        if (s.role == Role.HOST && s.group && Prefs.groupRelay && !item.relay && source != null &&
             (Premium.isPremium.value || item.size <= Premium.FREE_FILE_LIMIT)
         ) {
+            val relayUri = Uri.fromFile(source)
             peers.values.filter { it.id != from.id }.forEach { p ->
-                val out = TransferItem(UUID.randomUUID().toString(), item.name, item.size, item.mime,
-                    Direction.SEND, p.id, p.name)
+                val out = TransferItem(
+                    UUID.randomUUID().toString(), item.name, item.size, item.mime,
+                    Direction.SEND, p.id, p.name,
+                    shareKey = item.shareKey, originName = item.originName, relay = true, relayPath = item.relayPath
+                )
                 items.update { it + out }
-                p.enqueueFile(out, uri)
+                p.enqueueFile(out, relayUri)
             }
         }
     }
@@ -318,6 +356,7 @@ object TransferManager {
         peers.values.toList().forEach { it.close() }
         peers.clear()
         groupMembers = emptyList()
+        groupFiles.clear()
         runCatching { server?.close() }
         server = null
         cleanupNetwork()

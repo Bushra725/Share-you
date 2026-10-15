@@ -24,6 +24,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -41,18 +42,218 @@ object NetUtils {
             .filter { it.isUp && !it.isLoopback }
             .flatMap { ni ->
                 ni.inetAddresses.toList().filterIsInstance<Inet4Address>()
-                    .mapNotNull { a -> a.hostAddress?.let { ni.name to it } }
+                    .mapNotNull { a -> ipPair(ni.name, a.hostAddress) }
             }
     }.getOrDefault(emptyList())
 
-    private val hotspotPrefixes = listOf("ap", "swlan", "softap", "wlan1", "wigig")
+    /**
+     * Address the other device should open.
+     * Offline hotspot interfaces are named differently on Samsung, Xiaomi and Pixel
+     * (ap0, swlan0, wlan2, …) and often appear a moment after the hotspot starts.
+     * Browsers refuse 0.0.0.0, so this never returns that.
+     */
+    fun bestLocalIp(preferHotspot: Boolean, ctx: Context? = null): String? {
+        val pairs = collectIps(ctx, includeHotspotFallbacks = preferHotspot)
+        var best: String? = null
+        var bestScore = Int.MIN_VALUE
+        for ((name, ip) in pairs) {
+            if (!usableIp(name, ip)) continue
+            val score = ipScore(name, ip, preferHotspot)
+            if (score > bestScore) {
+                bestScore = score
+                best = ip
+            }
+        }
+        if (preferHotspot && best != null && !isHotspotCandidate(best, pairs)) return null
+        return best
+    }
 
-    fun bestLocalIp(preferHotspot: Boolean): String? {
-        val all = ipv4s().filterNot { it.first.startsWith("rmnet") || it.first.startsWith("ccmni") || it.first.startsWith("tun") }
-        if (preferHotspot) all.firstOrNull { (n, _) -> hotspotPrefixes.any { n.startsWith(it) } }?.let { return it.second }
-        all.firstOrNull { it.first.startsWith("wlan") }?.let { return it.second }
-        all.firstOrNull { it.first.startsWith("eth") }?.let { return it.second }
-        return all.firstOrNull { it.second.startsWith("192.168.") || it.second.startsWith("10.") || it.second.startsWith("172.") }?.second
+    /** Addresses already assigned, captured before the hotspot starts. */
+    fun assignedIps(): Set<String> = ipv4s().map { it.second }.toSet()
+
+    /**
+     * Address a PC on the offline hotspot can open.
+     * Ignores addresses the phone already had (Wi-Fi, mobile) and prefers the new soft-AP gateway.
+     */
+    fun hotspotIp(before: Set<String>, ctx: Context?): String? {
+        val pairs = collectIps(ctx, includeHotspotFallbacks = true)
+        var best: String? = null
+        var bestScore = 0
+        for ((name, ip) in pairs) {
+            val score = hotspotScore(name, ip, before)
+            if (score > bestScore) {
+                bestScore = score
+                best = ip
+            }
+        }
+        return best
+    }
+
+    /**
+     * Network whose interface is the soft AP. Binding to any other network hides the page from the PC.
+     */
+    fun hotspotNetwork(ctx: Context, ip: String): Network? {
+        val cm = ctx.applicationContext.getSystemService(ConnectivityManager::class.java) ?: return null
+        return cm.allNetworks.firstOrNull { network ->
+            val lp = cm.getLinkProperties(network) ?: return@firstOrNull false
+            val name = lp.interfaceName ?: return@firstOrNull false
+            val owns = lp.linkAddresses.any { cleanIp(it.address.hostAddress) == ip }
+            owns && hotspotIface(name)
+        }
+    }
+
+    private fun collectIps(ctx: Context?, includeHotspotFallbacks: Boolean): List<Pair<String, String>> {
+        val pairs = ArrayList<Pair<String, String>>()
+        pairs += ipv4s()
+        if (includeHotspotFallbacks) {
+            pairs += knownHotspotIfaces()
+            pairs += ipsFromIpCommand()
+            pairs += ipsFromRoutes()
+            pairs += ipsFromFibTrie()
+        }
+        if (ctx != null) pairs += ipsFromConnectivity(ctx)
+        return pairs
+    }
+
+    private fun knownHotspotIfaces(): List<Pair<String, String>> = runCatching {
+        listOf(
+            "ap0", "ap1", "swlan0", "swlan1", "softap0", "softap1",
+            "wlan1", "wlan2", "wlan3", "wlan4", "wigig0",
+            "ap_br_wlan0", "ap_br_wlan1", "sap0"
+        ).flatMap { name ->
+            val ni = NetworkInterface.getByName(name) ?: return@flatMap emptyList()
+            ni.inetAddresses.toList().filterIsInstance<Inet4Address>()
+                .mapNotNull { a -> ipPair(name, a.hostAddress) }
+        }
+    }.getOrDefault(emptyList())
+
+    private fun ipsFromConnectivity(ctx: Context): List<Pair<String, String>> = runCatching {
+        val cm = ctx.applicationContext.getSystemService(ConnectivityManager::class.java)
+        cm.allNetworks.flatMap { network ->
+            val lp = cm.getLinkProperties(network) ?: return@flatMap emptyList()
+            val name = lp.interfaceName ?: ""
+            lp.linkAddresses.mapNotNull { la ->
+                val a = la.address
+                if (a is Inet4Address && !a.isLoopbackAddress) ipPair(name, a.hostAddress) else null
+            }
+        }
+    }.getOrDefault(emptyList())
+
+    /** `ip addr` still prints the softap address on devices that hide it from NetworkInterface. */
+    private fun ipsFromIpCommand(): List<Pair<String, String>> = runCatching {
+        val process = ProcessBuilder("ip", "-4", "addr").redirectErrorStream(true).start()
+        val text = process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor()
+        val out = ArrayList<Pair<String, String>>()
+        var iface = ""
+        for (line in text.lineSequence()) {
+            val named = Regex("""^\d+:\s+(\S+?):""").find(line)
+            if (named != null) iface = named.groupValues[1].substringBefore('@')
+            val inet = Regex("""\binet\s+(\d+\.\d+\.\d+\.\d+)""").find(line)
+            if (inet != null && iface.isNotEmpty()) out += iface to inet.groupValues[1]
+        }
+        out
+    }.getOrDefault(emptyList())
+
+    /** `src` on the soft-AP route is the gateway the PC actually uses. */
+    private fun ipsFromRoutes(): List<Pair<String, String>> = runCatching {
+        val process = ProcessBuilder("ip", "-4", "route").redirectErrorStream(true).start()
+        val text = process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor()
+        Regex("""\bdev\s+(\S+)\b.*\bsrc\s+(\d+\.\d+\.\d+\.\d+)""")
+            .findAll(text)
+            .map { it.groupValues[1].substringBefore('@') to it.groupValues[2] }
+            .filter { (name, _) -> hotspotIface(name) }
+            .toList()
+    }.getOrDefault(emptyList())
+
+    private fun ipsFromFibTrie(): List<Pair<String, String>> = runCatching {
+        Regex("""\b(\d{1,3}(?:\.\d{1,3}){3})\b""")
+            .findAll(File("/proc/net/fib_trie").readText())
+            .map { it.groupValues[1] }
+            .distinct()
+            .filter { it.endsWith(".1") && knownHotspotPrefix(it) }
+            .map { "fib" to it }
+            .toList()
+    }.getOrDefault(emptyList())
+
+    private fun isHotspotCandidate(ip: String, pairs: List<Pair<String, String>>): Boolean =
+        pairs.any { (name, candidate) -> candidate == ip && acceptableHotspot(name, candidate) }
+
+    private fun acceptableHotspot(name: String, ip: String): Boolean {
+        if (!usableIp(name, ip)) return false
+        if (hotspotIface(name)) return true
+        if (knownHotspotPrefix(ip)) return true
+        if (name == "fib") return false
+        return ip.endsWith(".1") && (name.startsWith("wlan") || name == "ip" || name.isEmpty())
+    }
+
+    private fun knownHotspotPrefix(ip: String) =
+        ip.startsWith("192.168.43.") || ip.startsWith("192.168.49.") ||
+            ip.startsWith("192.168.137.") || ip.startsWith("192.168.229.")
+
+    private fun hotspotIface(name: String): Boolean {
+        val n = name.lowercase().substringBefore('@')
+        if (n == "wlan0" || n.startsWith("wlan0")) return false
+        return n.startsWith("ap") || n.startsWith("swlan") || n.startsWith("softap") ||
+            n.startsWith("sap") || n.startsWith("wigig") || n.contains("softap") || n.contains("ap_br")
+    }
+
+    private fun hotspotScore(name: String, ip: String, before: Set<String>): Int {
+        if (!usableIp(name, ip)) return 0
+        val n = name.lowercase()
+        val fresh = ip !in before
+        val gateway = ip.endsWith(".1")
+        var score = 0
+        if (hotspotIface(n) || n == "route") score += 200
+        if (fresh && (n.startsWith("wlan") || n.startsWith("ap") || n.startsWith("swlan"))) score += 140
+        if (gateway) score += 70
+        if (knownHotspotPrefix(ip)) score += 40
+        if (!fresh && !hotspotIface(n)) score -= 250
+        if (n.startsWith("wlan0")) score -= 200
+        return score
+    }
+
+    private fun usableIp(name: String, ip: String): Boolean {
+        if (ip.isBlank() || ip == "0.0.0.0" || ip.startsWith("169.254.")) return false
+        val n = name.lowercase()
+        if (n.startsWith("rmnet") || n.startsWith("ccmni") || n.startsWith("pdp") ||
+            n.startsWith("tun") || n.startsWith("dummy") || n.startsWith("lo") ||
+            n.contains("rmnet")
+        ) return false
+        return isPrivate(ip)
+    }
+
+    private fun isPrivate(ip: String): Boolean {
+        if (ip.startsWith("192.168.") || ip.startsWith("10.")) return true
+        if (!ip.startsWith("172.")) return false
+        val second = ip.split('.').getOrNull(1)?.toIntOrNull() ?: return false
+        return second in 16..31
+    }
+
+    private fun ipScore(name: String, ip: String, preferHotspot: Boolean): Int {
+        var score = 0
+        val gateway = ip.endsWith(".1")
+        val known = knownHotspotPrefix(ip)
+        if (preferHotspot) {
+            if (hotspotIface(name)) score += 100
+            if (gateway) score += 50
+            if (known) score += 40
+            if (name == "fib" && gateway) score += 20
+            if (name.startsWith("wlan0") && !gateway) score -= 40
+        } else {
+            if (name.startsWith("wlan")) score += 80
+            if (name.startsWith("eth")) score += 60
+            if (hotspotIface(name)) score -= 10
+        }
+        return score
+    }
+
+    private fun cleanIp(raw: String?): String? = raw?.substringBefore('%')?.takeIf { it.isNotBlank() }
+
+    private fun ipPair(name: String, raw: String?): Pair<String, String>? {
+        val ip = cleanIp(raw) ?: return null
+        return name to ip
     }
 
     /** All LAN-ish IPs; placed in the QR so the sender can try each one. */

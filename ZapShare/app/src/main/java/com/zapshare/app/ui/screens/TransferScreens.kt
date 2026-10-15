@@ -4,6 +4,8 @@ package com.zapshare.app.ui.screens
 
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
@@ -752,6 +754,14 @@ private fun TransferRow(item: TransferItem, nav: NavController) {
 }
 
 // ================================================================================ PC
+private fun openPcPage(ctx: Context, url: String?) {
+    if (url.isNullOrBlank()) return
+    val opened = runCatching {
+        ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.isSuccess
+    if (!opened) Toast.makeText(ctx, "Could not open the browser", Toast.LENGTH_SHORT).show()
+}
+
 @Composable
 fun PcScreen(nav: NavController) {
     val ctx = LocalContext.current
@@ -787,19 +797,33 @@ fun PcScreen(nav: NavController) {
                     Text("1. Connect the PC", style = MaterialTheme.typography.titleMedium)
                     val h = st.hotspot
                     if (h != null) {
-                        Text("Join this Wi-Fi on your PC:", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("On the PC, disconnect from other Wi-Fi and join this one. Windows will say there is no internet. Stay connected anyway.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("Network: ${h.ssid}", fontWeight = FontWeight.Bold)
                         Text("Password: ${h.pass}", fontWeight = FontWeight.Bold)
-                    } else Text("Make sure the PC is on the same Wi-Fi as this phone.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else Text("The PC and this phone must be on the same Wi-Fi. Internet is not required.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(12.dp))
-                    Text("2. Open this address in the PC's browser", style = MaterialTheme.typography.titleMedium)
+                    Text("2. In the PC browser, type this http address", style = MaterialTheme.typography.titleMedium)
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(st.url ?: "", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            st.url ?: "",
+                            color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            modifier = Modifier.weight(1f).clickable { openPcPage(ctx, st.url) }
+                        )
                         IconButton(onClick = {
                             ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("url", st.url))
                             if (Build.VERSION.SDK_INT < 33) Toast.makeText(ctx, "Copied", Toast.LENGTH_SHORT).show()
                         }) { Icon(Icons.Filled.ContentCopy, "Copy") }
                     }
+                    TextButton(onClick = { openPcPage(ctx, st.url) }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Open in browser")
+                    }
+                    Text(
+                        "Type it in Chrome or Edge on the PC, starting with http://. Do not use https. The page loads with no internet.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Text("Access code: ${st.token}", style = MaterialTheme.typography.bodySmall)
                 }
                 SectionCard {

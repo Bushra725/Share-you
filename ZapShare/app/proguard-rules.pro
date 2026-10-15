@@ -5,3 +5,7 @@
 -dontwarn com.fasterxml.jackson.**
 -keep class fi.iki.elonen.** { *; }
 -keep class com.journeyapps.barcodescanner.** { *; }
+-keep class com.github.axet.lamejni.** { *; }
+-keep class com.github.axet.vorbisjni.** { *; }
+-keep class androidx.media3.** { *; }
+-keep class com.zapshare.app.player.** { *; }

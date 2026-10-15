@@ -95,6 +95,72 @@ object Vault {
         return true
     }
 
+    fun hasPattern() = Prefs.vaultPatternHash != null && Prefs.vaultPatternSalt != null
+
+    fun hasQuestions() = !Prefs.vaultQuestions.isNullOrBlank()
+
+    fun questionIndexes(): List<Int> {
+        val raw = Prefs.vaultQuestions ?: return emptyList()
+        return runCatching {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map { arr.getJSONObject(it).getInt("q") }
+        }.getOrDefault(emptyList())
+    }
+
+    suspend fun saveQuestions(answers: List<Pair<Int, String>>) = withContext(Dispatchers.IO) {
+        val arr = JSONArray()
+        answers.forEach { (index, answer) ->
+            val salt = ByteArray(16).also(rnd::nextBytes)
+            arr.put(JSONObject().put("q", index).put("s", b64(salt)).put("h", b64(pbkdf2(normalize(answer), salt))))
+        }
+        Prefs.vaultQuestions = arr.toString()
+    }
+
+    suspend fun checkQuestions(answers: List<Pair<Int, String>>): Boolean = withContext(Dispatchers.IO) {
+        val raw = Prefs.vaultQuestions ?: return@withContext false
+        val arr = runCatching { JSONArray(raw) }.getOrNull() ?: return@withContext false
+        if (arr.length() != answers.size) return@withContext false
+        val given = answers.associate { it.first to normalize(it.second) }
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val answer = given[o.getInt("q")] ?: return@withContext false
+            val salt = unb64(o.getString("s"))
+            val expected = unb64(o.getString("h"))
+            if (!MessageDigest.isEqual(expected, pbkdf2(answer, salt))) return@withContext false
+        }
+        true
+    }
+
+    suspend fun setPattern(pattern: String) = withContext(Dispatchers.IO) {
+        val salt = ByteArray(16).also(rnd::nextBytes)
+        Prefs.vaultPatternSalt = b64(salt)
+        Prefs.vaultPatternHash = b64(pbkdf2(pattern, salt))
+    }
+
+    fun clearPattern() {
+        Prefs.vaultPatternHash = null
+        Prefs.vaultPatternSalt = null
+    }
+
+    suspend fun unlockWithPattern(ctx: Context, pattern: String): Boolean = withContext(Dispatchers.IO) {
+        val salt = Prefs.vaultPatternSalt?.let(::unb64) ?: return@withContext false
+        val expected = Prefs.vaultPatternHash?.let(::unb64) ?: return@withContext false
+        if (!MessageDigest.isEqual(expected, pbkdf2(pattern, salt))) return@withContext false
+        open(ctx)
+        true
+    }
+
+    /** Replaces the PIN after the security questions have been answered. Clears the pattern. */
+    suspend fun resetPin(ctx: Context, newPin: String) = withContext(Dispatchers.IO) {
+        val salt = ByteArray(16).also(rnd::nextBytes)
+        Prefs.vaultSalt = b64(salt)
+        Prefs.vaultPinHash = b64(pbkdf2(newPin, salt))
+        clearPattern()
+        open(ctx)
+    }
+
+    private fun normalize(answer: String) = answer.trim().lowercase().replace(Regex("\\s+"), " ")
+
     private fun open(ctx: Context) {
         dek = SecretKeySpec(unwrap(Prefs.vaultDek!!), "AES")
         loadIndex(ctx)

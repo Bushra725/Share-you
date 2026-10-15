@@ -45,7 +45,7 @@ object MediaRepository {
             ctx, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, audio = true, duration = true,
             selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0 OR ${MediaStore.MediaColumns.SIZE} > 500000",
             sort = "${MediaStore.MediaColumns.DISPLAY_NAME} COLLATE NOCASE ASC"
-        )
+        ).filter { FileUtils.extension(it.name) !in setOf("mp4", "m4v", "mov", "mkv", "webm", "3gp") }
     }
 
     suspend fun documents(ctx: Context) = withContext(Dispatchers.IO) {
@@ -93,6 +93,16 @@ object MediaRepository {
             sort = "${MediaStore.MediaColumns.SIZE} DESC", limit = 300
         )
     }
+
+    /** Raw MediaStore query for the cleaner (no row limit). */
+    fun queryWhere(
+        ctx: Context, collection: Uri, selection: String?, args: Array<String>?,
+        media: Boolean = false, audio: Boolean = false, duration: Boolean = false
+    ): List<MediaFile> = query(ctx, collection, selection, args, media = media, audio = audio, duration = duration)
+
+    /** Every file MediaStore has indexed, newest first. */
+    fun indexedFiles(ctx: Context): List<MediaFile> =
+        query(ctx, FILES, selection = "${MediaStore.MediaColumns.SIZE} >= 0")
 
     suspend fun recent(ctx: Context, limit: Int = 40) = withContext(Dispatchers.IO) {
         query(

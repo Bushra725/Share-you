@@ -184,7 +184,10 @@ fun HomeScreen(nav: NavController) {
         }
 
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            if (!premium) PremiumBanner { nav.navigate(Routes.PREMIUM) }
+            if (!premium) {
+                NativeAdCard()
+                PremiumBanner { nav.navigate(Routes.PREMIUM) }
+            }
 
             SectionCard {
                 Text(stringResource(R.string.quick_tools), style = MaterialTheme.typography.titleMedium)
@@ -196,7 +199,7 @@ fun HomeScreen(nav: NavController) {
                         ToolItem(Icons.Filled.CloudDownload, stringResource(R.string.downloader), CatMusic) { nav.navigate(Routes.DOWNLOADER) },
                         ToolItem(Icons.Filled.Lock, stringResource(R.string.safebox), CatSafe) { nav.navigate(Routes.SAFEBOX) },
                         ToolItem(Icons.Filled.Transform, stringResource(R.string.converter), CatDocs) { nav.navigate(Routes.CONVERTER) },
-                        ToolItem(Icons.Filled.CleaningServices, stringResource(R.string.clean), CatPink) { nav.navigate(Routes.LARGE) },
+                        ToolItem(Icons.Filled.CleaningServices, stringResource(R.string.clean), CatPink) { nav.navigate(Routes.CLEAN) },
                         ToolItem(Icons.Filled.Apps, stringResource(R.string.apps), CatDownload) { nav.navigate(Routes.APPS) },
                     )
                 )
@@ -205,7 +208,6 @@ fun HomeScreen(nav: NavController) {
             StorageCard { nav.navigate(Routes.BROWSER) }
 
             AdBanner(onRemoveAds = { nav.navigate(Routes.PREMIUM) })
-            NativeAdCard()
 
             SectionCard {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -336,7 +338,7 @@ fun ToolsScreen(nav: NavController) {
             ))
             ToolSection(stringResource(R.string.nav_files), listOf(
                 ToolItem(Icons.Filled.FolderOpen, stringResource(R.string.browse), CatCyan) { nav.navigate(Routes.BROWSER) },
-                ToolItem(Icons.Filled.CleaningServices, stringResource(R.string.large_files), CatPdf) { nav.navigate(Routes.LARGE) },
+                ToolItem(Icons.Filled.CleaningServices, stringResource(R.string.clean), CatPdf) { nav.navigate(Routes.CLEAN) },
                 ToolItem(Icons.Filled.Lock, stringResource(R.string.safebox), CatSafe) { nav.navigate(Routes.SAFEBOX) },
                 ToolItem(Icons.Filled.Apps, stringResource(R.string.apps), CatDownload) { nav.navigate(Routes.APPS) },
             ))
@@ -599,37 +601,76 @@ fun PermissionsScreen(onDone: () -> Unit) {
     var tick by remember { mutableIntStateOf(0) }
     LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { tick++ }
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { tick++ }
-    val media = remember(tick) { Permissions.hasMedia(ctx) }
+    val photos = remember(tick) { Permissions.hasPhotos(ctx) }
+    val videos = remember(tick) { Permissions.hasVideos(ctx) }
+    val music = remember(tick) { Permissions.granted(ctx, Permissions.audio()) }
     val nearby = remember(tick) { Permissions.granted(ctx, Permissions.nearby()) }
     val camera = remember(tick) { Permissions.granted(ctx, Permissions.camera()) }
     val notif = remember(tick) { Permissions.granted(ctx, Permissions.notifications()) }
     val allFiles = remember(tick) { Permissions.hasAllFiles() }
+    var ask by remember { mutableStateOf<PermAsk?>(null) }
     ZapScaffold("Preparations") { pad ->
         Column(Modifier.padding(pad).fillMaxSize().padding(16.dp)) {
             Box(Modifier.fillMaxWidth().height(150.dp).clip(RoundedCornerShape(24.dp)).background(BrandGradient), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Filled.WifiTethering, null, tint = Navy, modifier = Modifier.size(56.dp))
-                    Text("A few permissions to share at full speed", color = Navy, fontWeight = FontWeight.SemiBold)
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp)
+                ) {
+                    Icon(Icons.Filled.WifiTethering, null, tint = Navy, modifier = Modifier.size(48.dp))
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "A few permissions to share at full speed",
+                        color = Navy,
+                        fontWeight = FontWeight.SemiBold,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
             Spacer(Modifier.height(16.dp))
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                PermRow(Icons.Filled.PhotoLibrary, "Photos, videos & music", "Pick files to send and show what you received",
-                    media) { launcher.launch(Permissions.media()) }
+                PermRow(Icons.Filled.PhotoLibrary, "Photos",
+                    "To let you choose pictures to send, show photos you received, and find large or similar photos in Phone Cleaner. Photos stay on this phone and are not uploaded.",
+                    photos) { ask = PermAsk("Photos", PHOTO_REASON, Permissions.photos()) }
+                PermRow(Icons.Filled.OndemandVideo, "Videos",
+                    "To let you send videos, play them in the app, and find large recordings that fill storage. Videos stay on this phone and are not uploaded.",
+                    videos) { ask = PermAsk("Videos", VIDEO_REASON, Permissions.videos()) }
+                PermRow(Icons.Filled.MusicNote, "Music",
+                    "To list your songs in the player and let you send audio files.",
+                    music) { ask = PermAsk("Music", "Share reads music files only so the player can show them and you can send a song. Audio is not uploaded.", Permissions.audio()) }
                 PermRow(Icons.Filled.WifiTethering, "Nearby devices", "Create the offline hotspot and find friends faster",
                     nearby) { launcher.launch(Permissions.nearby()) }
-                PermRow(Icons.Filled.CameraAlt, "Camera", "Scan the QR code to connect",
+                PermRow(Icons.Filled.CameraAlt, "Camera", "Scan the QR code to connect. The camera is not used for anything else.",
                     camera) { launcher.launch(Permissions.camera()) }
                 if (Permissions.notifications().isNotEmpty())
-                    PermRow(Icons.Filled.Notifications, "Notifications", "Show transfer progress in the background",
+                    PermRow(Icons.Filled.Notifications, "Notifications", "Show transfer progress and the music controls.",
                         notif) { launcher.launch(Permissions.notifications()) }
-                PermRow(Icons.Filled.Storage, "All files access (optional)", "Full file manager and documents",
+                PermRow(Icons.Filled.Storage, "All files access (optional)", "Needed only for the full file manager, documents, and app cache in Scan.",
                     allFiles) { ctx.startActivity(Permissions.allFilesIntent(ctx)) }
             }
             GradientButton(stringResource(R.string.continue_btn), onDone, Modifier.fillMaxWidth())
         }
     }
+    ask?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { ask = null },
+            title = { Text("Why Share needs ${pending.title.lowercase()}") },
+            text = { Text(pending.reason) },
+            confirmButton = {
+                TextButton(onClick = { launcher.launch(pending.perms); ask = null }) { Text("Continue") }
+            },
+            dismissButton = { TextButton(onClick = { ask = null }) { Text("Not now") } }
+        )
+    }
 }
+
+private data class PermAsk(val title: String, val reason: String, val perms: Array<String>)
+
+private const val PHOTO_REASON =
+    "Share needs access to your photos so you can pick pictures to send to another phone or PC, open photos you received, and review large or similar photos in Phone Cleaner. Share does not upload your photos."
+
+private const val VIDEO_REASON =
+    "Share needs access to your videos so you can send a video, play it in the app, and find large recordings that use up storage. Share does not upload your videos."
 
 @Composable
 private fun PermRow(icon: ImageVector, title: String, desc: String, granted: Boolean, onClick: () -> Unit) {

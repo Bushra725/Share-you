@@ -92,12 +92,56 @@ function upload(file) {
     document.getElementById('uploads').prepend(li);
     const bar = li.querySelector('.bar>div');
     const fd = new FormData(); fd.append('file', file, file.name);
+    const mark = t => { li.querySelector('.size').textContent = t; };
+    let fellBack = false;
     const x = new XMLHttpRequest();
     x.open('POST', q('/upload'));
+    x.timeout = 0;
     x.upload.onprogress = e => { if (e.lengthComputable) bar.style.width = (e.loaded / e.total * 100) + '%'; };
-    x.onload = () => { bar.style.width = '100%'; li.querySelector('.size').textContent = x.status === 200 ? 'Done ✓' : 'Failed'; refresh(); res(); };
-    x.onerror = () => { li.querySelector('.size').textContent = 'Failed'; res(); };
+    x.onload = () => {
+      bar.style.width = '100%';
+      if (x.status === 200) { mark('Done ✓'); refresh(); res(); }
+      else if (x.status === 0) sendByForm();
+      else { mark('Failed — ' + (x.responseText || ('HTTP ' + x.status))); res(); }
+    };
+    x.onerror = () => sendByForm();
     x.send(fd);
+    function sendByForm() {
+      if (fellBack) return;
+      fellBack = true;
+      const frame = document.createElement('iframe');
+      const frameName = 'zap' + Math.random().toString(36).slice(2);
+      frame.name = frameName;
+      frame.style.display = 'none';
+      const form = document.createElement('form');
+      form.method = 'POST';
+      form.action = q('/upload');
+      form.enctype = 'multipart/form-data';
+      form.target = frameName;
+      form.style.display = 'none';
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.name = 'file';
+      const bag = new DataTransfer();
+      bag.items.add(file);
+      input.files = bag.files;
+      form.appendChild(input);
+      document.body.appendChild(form);
+      frame.onload = () => {
+        frame.onload = () => {
+          let text = '';
+          try { text = (frame.contentDocument.body.innerText || '').trim(); } catch (e) {}
+          bar.style.width = '100%';
+          mark(/"ok"\s*:\s*true/.test(text) ? 'Done ✓' : ('Failed — ' + (text || 'the phone did not receive the file')));
+          refresh();
+          frame.remove();
+          form.remove();
+          res();
+        };
+        form.submit();
+      };
+      document.body.appendChild(frame);
+    }
   });
 }
 </script>

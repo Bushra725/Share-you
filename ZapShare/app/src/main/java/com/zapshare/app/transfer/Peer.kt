@@ -16,6 +16,8 @@ import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
+import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.Socket
 import java.util.UUID
@@ -97,7 +99,13 @@ class Peer(private val socket: Socket, private val mgr: TransferManager) {
             ins.use { stream ->
                 writeHeader(
                     Protocol.T_FILE,
-                    JSONObject().put("name", item.name).put("size", item.size).put("mime", item.mime)
+                    JSONObject()
+                        .put("name", item.name)
+                        .put("size", item.size)
+                        .put("mime", item.mime)
+                        .put("fid", item.shareKey.ifBlank { item.id })
+                        .put("origin", item.originName.ifBlank { Prefs.deviceName })
+                        .put("relay", item.relay)
                 )
                 val buf = ByteArray(Protocol.BUF)
                 var remaining = item.size
@@ -155,11 +163,23 @@ class Peer(private val socket: Socket, private val mgr: TransferManager) {
 
     private fun receiveFile(json: JSONObject) {
         val size = json.getLong("size")
-        val name = FileUtils.safeName(json.optString("name", "file"))
-        val mime = json.optString("mime").ifEmpty { FileUtils.mimeOf(name) }
-        val item = mgr.startIncoming(this, name, size, mime)
-        val sub = FileUtils.categoryOf(mime, name).folder
+        val fileName = FileUtils.safeName(json.optString("name", "file"))
+        val mime = json.optString("mime").ifEmpty { FileUtils.mimeOf(fileName) }
+        val origin = json.optString("origin").ifBlank { this.name }
+        val shareKey = json.optString("fid").ifBlank { "$fileName|$size" }
+        val relay = json.optBoolean("relay", false)
+        if (!mgr.claimGroupFile(shareKey, id)) {
+            discard(size)
+            return
+        }
+        val spool = if (mgr.session.value.role == Role.HOST && mgr.session.value.group && !relay) {
+            File(mgr.context.cacheDir, "work").apply { mkdirs() }
+            File(mgr.context.cacheDir, "work/in-$id")
+        } else null
+        val item = mgr.startIncoming(this, fileName, size, mime, origin, shareKey, relay, spool?.absolutePath)
+        val sub = FileUtils.categoryOf(mime, fileName).folder
         val out = runCatching { FileUtils.createOutput(mgr.context, name, mime, sub) }.getOrNull()
+        val spoolOut = spool?.let { runCatching { BufferedOutputStream(FileOutputStream(it), Protocol.BUF) }.getOrNull() }
         var ok = false
         try {
             val buf = ByteArray(Protocol.BUF)
@@ -167,19 +187,33 @@ class Peer(private val socket: Socket, private val mgr: TransferManager) {
             while (remaining > 0) {
                 val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
                 if (n < 0) throw EOFException("Connection lost")
-                out?.stream?.write(buf, 0, n)   // if we can't write, still drain to stay in sync
+                out?.stream?.write(buf, 0, n)
+                spoolOut?.write(buf, 0, n)
                 remaining -= n
                 mgr.addProgress(item.id, n.toLong())
             }
             out?.stream?.flush()
+            spoolOut?.flush()
             ok = out != null
         } finally {
+            runCatching { spoolOut?.close() }
+            if (!ok) spool?.delete()
             out?.let {
                 runCatching { it.stream.close() }
                 FileUtils.finishOutput(mgr.context, it, ok)
             }
             if (ok) mgr.markReceived(this, item, out!!.uri)
             else mgr.markFailed(item.id, if (out == null) "No storage access" else "Interrupted")
+        }
+    }
+
+    private fun discard(size: Long) {
+        val buf = ByteArray(Protocol.BUF)
+        var remaining = size
+        while (remaining > 0) {
+            val n = input.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
+            if (n < 0) throw EOFException("Connection lost")
+            remaining -= n
         }
     }
 

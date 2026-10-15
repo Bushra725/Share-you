@@ -29,6 +29,11 @@ class ZapApp : Application(), ImageLoaderFactory {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH_TRANSFER, "File transfer", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CH_DOWNLOAD, "Downloads", NotificationManager.IMPORTANCE_LOW))
+        nm.createNotificationChannel(
+            NotificationChannel("default_channel_id", "Music playback", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Play, pause, next, and previous"
+            }
+        )
     }
 
     /** Coil loader that can also draw video thumbnails. */

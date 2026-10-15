@@ -21,6 +21,17 @@ object Permissions {
     ) else if (Build.VERSION.SDK_INT >= 29) arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
     else arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
 
+    /** Photos only, so the prompt is separate from videos. */
+    fun photos(): Array<String> = if (Build.VERSION.SDK_INT >= 33)
+        arrayOf(Manifest.permission.READ_MEDIA_IMAGES) else media()
+
+    /** Videos only, so the prompt is separate from photos. */
+    fun videos(): Array<String> = if (Build.VERSION.SDK_INT >= 33)
+        arrayOf(Manifest.permission.READ_MEDIA_VIDEO) else media()
+
+    fun audio(): Array<String> = if (Build.VERSION.SDK_INT >= 33)
+        arrayOf(Manifest.permission.READ_MEDIA_AUDIO) else media()
+
     /** Needed to create / join the offline hotspot and discover devices. */
     fun nearby(): Array<String> = if (Build.VERSION.SDK_INT >= 33)
         arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -35,8 +46,14 @@ object Permissions {
         perms.all { ContextCompat.checkSelfPermission(ctx, it) == PackageManager.PERMISSION_GRANTED }
 
     /** On Android 14+ users may grant only "selected photos" — treat as usable. */
-    fun hasMedia(ctx: Context): Boolean = granted(ctx, media()) ||
-        (Build.VERSION.SDK_INT >= 34 && granted(ctx, arrayOf(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)))
+    fun hasMedia(ctx: Context): Boolean = granted(ctx, media()) || hasSelectedVisual(ctx)
+
+    fun hasPhotos(ctx: Context): Boolean = granted(ctx, photos()) || hasSelectedVisual(ctx)
+
+    fun hasVideos(ctx: Context): Boolean = granted(ctx, videos()) || hasSelectedVisual(ctx)
+
+    private fun hasSelectedVisual(ctx: Context) =
+        Build.VERSION.SDK_INT >= 34 && granted(ctx, arrayOf(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED))
 
     fun hasAllFiles(): Boolean = Build.VERSION.SDK_INT < 30 || Environment.isExternalStorageManager()
 

@@ -66,6 +66,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
@@ -95,8 +97,13 @@ import java.util.zip.ZipInputStream
 fun PreviewScreen(nav: NavController, uri: Uri, name: String, mimeIn: String) {
     val ctx = LocalContext.current
     val mime = mimeIn.ifEmpty { FileUtils.mimeOf(name) }
-    val cat = FileUtils.categoryOf(mime, name)
     val ext = FileUtils.extension(name)
+    val cat = when (ext) {
+        "mp4", "m4v", "mov", "mkv", "webm", "3gp" -> FileCategory.VIDEO
+        "mp3", "m4a", "aac", "wav", "ogg", "opus", "flac", "amr" -> FileCategory.AUDIO
+        "gif" -> FileCategory.IMAGE
+        else -> FileUtils.categoryOf(mime, name)
+    }
     ZapScaffold(
         name, onBack = { nav.popBackStack() },
         actions = {
@@ -154,25 +161,41 @@ private fun ZoomableImage(uri: Uri) {
 @Composable
 fun VideoSurface(uri: Uri, modifier: Modifier = Modifier, audio: Boolean = false, onPlayer: (ExoPlayer) -> Unit = {}, onFullscreen: ((Boolean) -> Unit)? = null) {
     val ctx = LocalContext.current
+    var failed by remember(uri) { mutableStateOf(false) }
     val player = remember(uri) {
         ExoPlayer.Builder(ctx).build().apply {
-            setMediaItem(MediaItem.fromUri(uri)); prepare(); playWhenReady = true
+            setMediaItem(MediaItem.fromUri(uri))
+            addListener(object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) { failed = true }
+            })
+            prepare()
+            playWhenReady = true
         }
     }
     LaunchedEffect(player) { onPlayer(player) }
     DisposableEffect(player) { onDispose { player.release() } }
-    AndroidView(
-        factory = {
-            PlayerView(it).apply {
-                this.player = player
-                keepScreenOn = true
-                setShowNextButton(false); setShowPreviousButton(false)
-                if (audio) { controllerShowTimeoutMs = 0; controllerHideOnTouch = false; defaultArtwork = null }
-                if (onFullscreen != null) setFullscreenButtonClickListener { full -> onFullscreen(full) }
-            }
-        },
-        modifier = modifier.background(Color.Black)
-    )
+    Box(modifier.background(Color.Black)) {
+        AndroidView(
+            factory = {
+                PlayerView(it).apply {
+                    this.player = player
+                    keepScreenOn = true
+                    setShowNextButton(false); setShowPreviousButton(false)
+                    if (audio) { controllerShowTimeoutMs = 0; controllerHideOnTouch = false; defaultArtwork = null }
+                    if (onFullscreen != null) setFullscreenButtonClickListener { full -> onFullscreen(full) }
+                }
+            },
+            modifier = Modifier.fillMaxSize()
+        )
+        if (failed) {
+            Text(
+                if (audio) "Can't play this audio" else "This video cannot be played",
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center).padding(24.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+        }
+    }
 }
 
 @Composable

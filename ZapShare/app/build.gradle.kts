@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -49,15 +50,18 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
         buildConfig = true
     }
     packaging {
         resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    }
+}
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -85,7 +89,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
 
     // Premium: Google Play Billing (free library; Google takes its standard store fee on sales)
-    implementation("com.android.billingclient:billing-ktx:7.1.1")
+    implementation("com.android.billingclient:billing-ktx:9.1.0")
     implementation("androidx.lifecycle:lifecycle-process:2.8.7")
     implementation("com.google.android.gms:play-services-ads:23.6.0")
 
@@ -97,6 +101,7 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
+    implementation("androidx.media:media:1.7.0")
 
     // QR code generate + scan (open source, on-device)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
@@ -104,4 +109,8 @@ dependencies {
 
     // Tiny embedded web server for "Connect to PC"
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+
+    // Small on-device encoders (MP3 and OGG). Full FFmpeg is not packed into the app.
+    implementation("com.github.axet:lame:1.0.9")
+    implementation("com.github.axet:vorbis:1.0.6")
 }
