@@ -22,7 +22,7 @@ class AppPrefs extends ChangeNotifier {
   }
 
   Future<void> cycleAvatar() async {
-    avatar = (avatar + 1) % 8;
+    avatar = (avatar + 1) % 12;
     final p = await SharedPreferences.getInstance();
     await p.setInt('avatar', avatar);
     notifyListeners();

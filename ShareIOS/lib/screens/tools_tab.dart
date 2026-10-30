@@ -12,6 +12,7 @@ class ToolsTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: page,
       appBar: AppBar(title: const Text('Tools')),
       body: ListenableBuilder(
         listenable: services.premium,

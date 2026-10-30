@@ -16,6 +16,7 @@ class FilesTab extends StatelessWidget {
       builder: (context, _) {
         final received = services.library.received;
         return Scaffold(
+          backgroundColor: page,
           appBar: AppBar(
             title: const Text('Files'),
             actions: [
@@ -38,19 +39,19 @@ class FilesTab extends StatelessWidget {
               SectionCard(
                 child: TileGrid(
                   tiles: [
-                    ToolTile(icon: Icons.music_note, label: 'Music', color: catMusic, badge: '…', onTap: () => context.push('${Routes.category}/music')),
+                    ToolTile(icon: Icons.music_note, label: 'Music', color: catMusic, onTap: () => context.push('${Routes.category}/music')),
                     ToolTile(icon: Icons.apps, label: 'Apps', color: catApps, onTap: () => context.push(Routes.apps)),
                     ToolTile(icon: Icons.movie, label: 'Videos', color: catVideo, onTap: () => context.push('${Routes.category}/videos')),
                     ToolTile(icon: Icons.image, label: 'Photos', color: catPhoto, onTap: () => context.push('${Routes.category}/photos')),
                     ToolTile(icon: Icons.description, label: 'Documents', color: catDocs, onTap: () => context.push('${Routes.category}/docs')),
-                    ToolTile(icon: Icons.folder_zip, label: 'ZIP', color: Color(0xFFD97706), onTap: () => context.push('${Routes.category}/zips')),
+                    ToolTile(icon: Icons.folder_zip, label: 'ZIP', color: const Color(0xFFD97706), onTap: () => context.push('${Routes.category}/zips')),
                     ToolTile(icon: Icons.transform, label: 'Converter', color: catPdf, onTap: () => context.push(Routes.converter)),
                     ToolTile(icon: Icons.lock, label: 'Safebox', color: catSafe, onTap: () => context.push(Routes.safebox)),
                     ToolTile(
                       icon: Icons.download,
                       label: 'Received',
                       color: catDownload,
-                      badge: '${received.length}',
+                      badge: received.isEmpty ? null : '${received.length}',
                       onTap: () => context.push('${Routes.category}/received'),
                     ),
                   ],

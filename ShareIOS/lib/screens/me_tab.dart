@@ -91,13 +91,21 @@ class MeTab extends StatelessWidget {
                         MenuRow(icon: Icons.history, title: 'Transfer history', onTap: () => context.push(Routes.history)),
                         MenuRow(icon: Icons.lock, title: 'Safebox', onTap: () => context.push(Routes.safebox)),
                         MenuRow(icon: Icons.settings, title: 'Settings', onTap: () => context.push(Routes.settings)),
-                        MenuRow(icon: Icons.privacy_tip, title: 'Privacy', onTap: () => context.push(Routes.privacy)),
+                        MenuRow(
+                          icon: Icons.update,
+                          title: 'Update video downloader engine',
+                          onTap: () {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(content: Text('Downloader engine is bundled with the iOS build.')),
+                            );
+                          },
+                        ),
                         MenuRow(
                           icon: Icons.policy,
                           title: 'Privacy policy',
                           onTap: () => launchUrl(Uri.parse(AppConfig.privacyPolicyUrl), mode: LaunchMode.externalApplication),
                         ),
-                        MenuRow(icon: Icons.info, title: 'About', subtitle: 'Share you 1.0 · ${AppConfig.bundleId}', onTap: () {}),
+                        MenuRow(icon: Icons.info, title: 'About', subtitle: 'Share you 1.0', onTap: () {}),
                       ],
                     ),
                   ),

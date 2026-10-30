@@ -112,7 +112,7 @@ class HomeTab extends StatelessWidget {
                         if (recent.isEmpty)
                           const Padding(
                             padding: EdgeInsets.symmetric(vertical: 12),
-                            child: Text('Received files will show here.', style: TextStyle(color: Color(0xFF5B7380))),
+                            child: Text('Files you receive will show up here.', style: TextStyle(color: Color(0xFF5B7380))),
                           )
                         else
                           for (final e in recent)
@@ -155,7 +155,7 @@ class _StorageCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Internal storage', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 16, color: navy)),
-                      Text('Browse files on this iPhone', style: TextStyle(color: Color(0xFF5B7380), fontSize: 13)),
+                      Text('Tap to browse files', style: TextStyle(color: Color(0xFF5B7380), fontSize: 13)),
                     ],
                   ),
                 ),
@@ -170,7 +170,7 @@ class _StorageCard extends StatelessWidget {
             const SizedBox(height: 6),
             const Align(
               alignment: Alignment.centerLeft,
-              child: Text('Tap to browse', style: TextStyle(fontSize: 12, color: Color(0xFF5B7380))),
+              child: Text('Available on this device', style: TextStyle(fontSize: 12, color: Color(0xFF5B7380))),
             ),
           ],
         ),
