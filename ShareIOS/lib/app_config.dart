@@ -2,8 +2,8 @@
 class AppConfig {
   static const bundleId = 'com.ol.your.mob.send.share.files';
 
-  /// Same privacy policy used by the Android Share you release.
-  static const privacyPolicyUrl = 'https://sites.google.com/view/mob-apps-inc/privacy-policy';
+  /// iOS publisher privacy policy (Access Studio LLC / Occess Studio LLC).
+  static const privacyPolicyUrl = 'https://sites.google.com/view/occessstudiollc/privacy-policy';
   static const termsUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
   static const manageSubscriptionsUrl = 'https://apps.apple.com/account/subscriptions';
 
