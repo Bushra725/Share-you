@@ -51,7 +51,10 @@ class PrivacyBody extends StatelessWidget {
           'Apple payments',
           'Premium is sold by Apple through In-App Purchase. Share does not receive your card number.',
         ),
-        _Block('No tracking', 'Share does not track you across other companies’ apps or websites.'),
+        _Block(
+          'Ads and measurement',
+          'The free version shows Google AdMob ads. If you allow App Tracking, Share and our partners (including Adjust) may use the advertising identifier to measure installs and ad performance. Premium removes ads. See the full privacy policy for details.',
+        ),
         _Block('Face ID', 'If you turn on Face ID for Safebox, iOS performs the check. Share only learns whether it succeeded.'),
         _Block('Photos and files', 'Share reads a photo or file only after you pick it.'),
       ],

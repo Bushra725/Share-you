@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:share_ios/adjust_tracking.dart';
+import 'package:share_ios/app_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Apple In-App Purchase (StoreKit). Digital Premium must be sold through Apple.
@@ -12,9 +14,9 @@ class PremiumStore extends ChangeNotifier {
   static const ids = {monthlyId, yearlyId, lifetimeId};
   static const freeFileLimit = 100 * 1024 * 1024;
 
-  static const privacyPolicyUrl = 'https://sites.google.com/view/mob-apps-inc/privacy-policy';
-  static const termsUrl = 'https://www.apple.com/legal/internet-services/itunes/dev/stdeula/';
-  static const manageUrl = 'https://apps.apple.com/account/subscriptions';
+  static const privacyPolicyUrl = AppConfig.privacyPolicyUrl;
+  static const termsUrl = AppConfig.termsUrl;
+  static const manageUrl = AppConfig.manageSubscriptionsUrl;
 
   final InAppPurchase _iap = InAppPurchase.instance;
   StreamSubscription<List<PurchaseDetails>>? _sub;
@@ -97,10 +99,14 @@ class PremiumStore extends ChangeNotifier {
         case PurchaseStatus.purchased:
         case PurchaseStatus.restored:
           if (ids.contains(purchase.productID)) {
+            final wasPremium = isPremium;
             isPremium = true;
             final prefs = await SharedPreferences.getInstance();
             await prefs.setBool('apple_premium', true);
             message = 'Welcome to Premium.';
+            if (purchase.status == PurchaseStatus.purchased && !wasPremium) {
+              AdjustTracking.trackStartTrial();
+            }
           }
           if (purchase.pendingCompletePurchase) {
             await _iap.completePurchase(purchase);

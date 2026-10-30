@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:share_ios/ads.dart';
+import 'package:share_ios/app_config.dart';
 import 'package:share_ios/library.dart';
 import 'package:share_ios/pc_server.dart';
 import 'package:share_ios/premium_store.dart';
@@ -10,6 +12,7 @@ import 'package:share_ios/screens/safebox_screen.dart';
 import 'package:share_ios/screens/transfer_screens.dart';
 import 'package:share_ios/theme.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key, required this.library, required this.premium, required this.server});
@@ -28,20 +31,26 @@ class _HomeShellState extends State<HomeShell> {
   Widget build(BuildContext context) {
     final pages = [
       _Home(library: widget.library, premium: widget.premium, server: widget.server),
-      _Files(library: widget.library),
+      _Files(library: widget.library, premium: widget.premium),
       PlayerScreen(library: widget.library),
       _Me(premium: widget.premium, library: widget.library),
     ];
     return Scaffold(
       body: SafeArea(child: pages[tab]),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: tab,
-        onDestinationSelected: (i) => setState(() => tab = i),
-        destinations: const [
-          NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
-          NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Files'),
-          NavigationDestination(icon: Icon(Icons.play_circle_outline), selectedIcon: Icon(Icons.play_circle), label: 'Player'),
-          NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Me'),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (tab == 0 || tab == 1) ShareBannerAd(premium: widget.premium, secondary: tab == 1),
+          NavigationBar(
+            selectedIndex: tab,
+            onDestinationSelected: (i) => setState(() => tab = i),
+            destinations: const [
+              NavigationDestination(icon: Icon(Icons.home_outlined), selectedIcon: Icon(Icons.home), label: 'Home'),
+              NavigationDestination(icon: Icon(Icons.folder_outlined), selectedIcon: Icon(Icons.folder), label: 'Files'),
+              NavigationDestination(icon: Icon(Icons.play_circle_outline), selectedIcon: Icon(Icons.play_circle), label: 'Player'),
+              NavigationDestination(icon: Icon(Icons.person_outline), selectedIcon: Icon(Icons.person), label: 'Me'),
+            ],
+          ),
         ],
       ),
     );
@@ -99,8 +108,9 @@ class _Home extends StatelessWidget {
     );
   }
 
-  void _open(BuildContext context, Widget page) {
-    Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+  Future<void> _open(BuildContext context, Widget page) async {
+    await Navigator.push(context, MaterialPageRoute(builder: (_) => page));
+    await ShareAds.tryShowInterstitial(premium: premium);
   }
 }
 
@@ -134,8 +144,9 @@ class _Tile extends StatelessWidget {
 }
 
 class _Files extends StatelessWidget {
-  const _Files({required this.library});
+  const _Files({required this.library, required this.premium});
   final FileLibrary library;
+  final PremiumStore premium;
 
   @override
   Widget build(BuildContext context) {
@@ -203,13 +214,19 @@ class _Me extends StatelessWidget {
             ),
             ListTile(
               contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.policy, color: cyanInk),
+              title: const Text('Privacy policy'),
+              onTap: () => launchUrl(Uri.parse(AppConfig.privacyPolicyUrl), mode: LaunchMode.externalApplication),
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.restore, color: cyanInk),
               title: const Text('Restore purchases'),
               onTap: premium.restore,
             ),
             const SizedBox(height: 24),
             const Text('Share 1.0', style: TextStyle(color: Color(0xFF5B7380))),
-            const Text('First App Store release', style: TextStyle(color: Color(0xFF5B7380))),
+            Text(AppConfig.bundleId, style: const TextStyle(color: Color(0xFF5B7380), fontSize: 12)),
           ],
         );
       },
