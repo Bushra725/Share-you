@@ -32,6 +32,8 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+data class LanLink(val network: Network, val ip: String, val name: String)
+
 object NetUtils {
     const val TRANSFER_PORT = 48520
     const val PC_PORT = 8888
@@ -262,6 +264,50 @@ object NetUtils {
         .map { it.second }
 
     fun intToIp(i: Int) = "${i and 0xff}.${i shr 8 and 0xff}.${i shr 16 and 0xff}.${i shr 24 and 0xff}"
+
+    /** The phone's normal Wi-Fi (or Ethernet), never the offline hotspot. */
+    fun clientWifi(ctx: Context): LanLink? {
+        val cm = ctx.applicationContext.getSystemService(ConnectivityManager::class.java) ?: return null
+        var best: LanLink? = null
+        var bestScore = Int.MIN_VALUE
+        for (network in cm.allNetworks) {
+            val caps = cm.getNetworkCapabilities(network) ?: continue
+            val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+            val ethernet = caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            if (!wifi && !ethernet) continue
+            if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            val lp = cm.getLinkProperties(network) ?: continue
+            val iface = lp.interfaceName.orEmpty()
+            if (hotspotIface(iface)) continue
+            val ip = lp.linkAddresses.mapNotNull { la ->
+                val address = la.address
+                if (address is Inet4Address && !address.isLoopbackAddress) cleanIp(address.hostAddress) else null
+            }.firstOrNull { usableIp(iface, it) } ?: continue
+            var score = if (wifi) 80 else 60
+            if (iface.startsWith("wlan")) score += 20
+            if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) score += 5
+            if (score > bestScore) {
+                bestScore = score
+                best = LanLink(network, ip, wifiTitle(caps) ?: "Wi-Fi")
+            }
+        }
+        return best
+    }
+
+    /** Network that actually owns [ip], so the PC page is reachable on that interface. */
+    fun networkOwning(ctx: Context, ip: String): Network? {
+        val cm = ctx.applicationContext.getSystemService(ConnectivityManager::class.java) ?: return null
+        return cm.allNetworks.firstOrNull { network ->
+            val lp = cm.getLinkProperties(network) ?: return@firstOrNull false
+            lp.linkAddresses.any { cleanIp(it.address.hostAddress) == ip }
+        }
+    }
+
+    private fun wifiTitle(caps: NetworkCapabilities): String? {
+        val info = caps.transportInfo as? android.net.wifi.WifiInfo ?: return null
+        val ssid = info.ssid?.trim('"')
+        return ssid?.takeIf { it.isNotBlank() && it != "<unknown ssid>" }
+    }
 
     fun isOnWifi(ctx: Context): Boolean {
         val cm = ctx.getSystemService(ConnectivityManager::class.java)

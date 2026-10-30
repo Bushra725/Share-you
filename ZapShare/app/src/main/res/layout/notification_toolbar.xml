@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/toolbar_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@android:color/white"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:paddingTop="2dp"
+    android:paddingBottom="2dp">
+
+    <LinearLayout
+        android:id="@+id/tb_transfer"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/tb_transfer_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:background="@drawable/tb_circle_transfer"
+            android:padding="8dp"
+            android:src="@drawable/ic_tb_transfer" />
+
+        <TextView
+            android:id="@+id/tb_transfer_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text="Transfer"
+            android:textColor="#334155"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/tb_discover"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/tb_discover_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:background="@drawable/tb_circle_discover"
+            android:padding="8dp"
+            android:src="@drawable/ic_tb_discover" />
+
+        <TextView
+            android:id="@+id/tb_discover_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text="Discover"
+            android:textColor="#334155"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/tb_files"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/tb_files_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:background="@drawable/tb_circle_files"
+            android:padding="8dp"
+            android:src="@drawable/ic_tb_files" />
+
+        <TextView
+            android:id="@+id/tb_files_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text="Files"
+            android:textColor="#334155"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/tb_clean"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:orientation="vertical">
+
+        <ImageView
+            android:id="@+id/tb_clean_icon"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:background="@drawable/tb_circle_clean"
+            android:padding="8dp"
+            android:src="@drawable/ic_tb_clean" />
+
+        <TextView
+            android:id="@+id/tb_clean_label"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text="Clean"
+            android:textColor="#334155"
+            android:textSize="11sp" />
+    </LinearLayout>
+</LinearLayout>

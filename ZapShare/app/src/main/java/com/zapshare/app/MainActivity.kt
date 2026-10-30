@@ -10,6 +10,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import com.zapshare.app.data.ShareItem
 import com.zapshare.app.downloader.VideoDownloader
+import com.zapshare.app.toolbar.ShareToolbar
 import com.zapshare.app.ui.navigation.ZapShareApp
 import com.zapshare.app.ui.theme.ZapTheme
 import com.zapshare.app.util.FileUtils
@@ -23,6 +24,7 @@ sealed class IncomingShare {
 
 object IntentBus {
     val incoming = MutableStateFlow<IncomingShare?>(null)
+    val route = MutableStateFlow<String?>(null)
 }
 
 // AppCompatActivity: needed for in-app language switching; it is also a FragmentActivity (BiometricPrompt).
@@ -44,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun handle(intent: Intent?) {
         intent ?: return
+        intent.getStringExtra(ShareToolbar.EXTRA_ROUTE)?.let { IntentBus.route.value = it }
         when (intent.action) {
             Intent.ACTION_SEND -> {
                 val stream = streamExtra(intent)

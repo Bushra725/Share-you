@@ -3,10 +3,17 @@
 package com.zapshare.app.ui.screens
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Color as AColor
+import android.graphics.ImageDecoder
+import android.graphics.drawable.Animatable
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.widget.ImageView
+import android.view.LayoutInflater
 import androidx.annotation.OptIn as AndroidOptIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -73,6 +80,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
+import com.zapshare.app.R
 import com.zapshare.app.data.FileCategory
 import com.zapshare.app.data.ShareItem
 import com.zapshare.app.ui.components.ApkIcon
@@ -110,13 +118,14 @@ fun PreviewScreen(nav: NavController, uri: Uri, name: String, mimeIn: String) {
             IconButton(onClick = {
                 Selection.replace(listOf(FileUtils.queryMeta(ctx, uri).let { if (it.size > 0) it else ShareItem(uri, name, it.size, mime) }))
                 nav.navigate(Routes.SEND)
-            }) { Icon(Icons.Filled.Send, "Send with ZapShare") }
+            }) { Icon(Icons.Filled.Send, "Send with Share you") }
             IconButton(onClick = { FileUtils.shareExternal(ctx, listOf(uri), mime) }) { Icon(Icons.Filled.Share, "Share") }
             IconButton(onClick = { FileUtils.openWith(ctx, uri, mime) }) { Icon(Icons.Filled.OpenInNew, "Open with") }
         }
     ) { pad ->
         Box(Modifier.padding(pad).fillMaxSize()) {
             when {
+                ext == "gif" || mime == "image/gif" -> GifImage(uri)
                 cat == FileCategory.IMAGE -> ZoomableImage(uri)
                 cat == FileCategory.VIDEO -> VideoSurface(uri, Modifier.fillMaxSize())
                 cat == FileCategory.AUDIO -> Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.Center) {
@@ -132,6 +141,36 @@ fun PreviewScreen(nav: NavController, uri: Uri, name: String, mimeIn: String) {
             }
         }
     }
+}
+
+@Composable
+private fun GifImage(uri: Uri) {
+    val ctx = LocalContext.current
+    var anim by remember { mutableStateOf<Animatable?>(null) }
+    DisposableEffect(uri) {
+        onDispose { anim?.stop() }
+    }
+    AndroidView(
+        modifier = Modifier.fillMaxSize().background(Color.Black),
+        factory = { context ->
+            ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_CENTER }
+        },
+        update = { view ->
+            val drawable = runCatching {
+                if (Build.VERSION.SDK_INT >= 28) {
+                    ImageDecoder.decodeDrawable(ImageDecoder.createSource(ctx.contentResolver, uri))
+                } else {
+                    ctx.contentResolver.openInputStream(uri)?.use {
+                        BitmapDrawable(ctx.resources, BitmapFactory.decodeStream(it))
+                    }
+                }
+            }.getOrNull()
+            view.setImageDrawable(drawable)
+            val playing = drawable as? Animatable
+            anim = playing
+            playing?.start()
+        }
+    )
 }
 
 @Composable
@@ -177,9 +216,10 @@ fun VideoSurface(uri: Uri, modifier: Modifier = Modifier, audio: Boolean = false
     Box(modifier.background(Color.Black)) {
         AndroidView(
             factory = {
-                PlayerView(it).apply {
+                (LayoutInflater.from(it).inflate(R.layout.video_player_view, null) as PlayerView).apply {
                     this.player = player
                     keepScreenOn = true
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                     setShowNextButton(false); setShowPreviousButton(false)
                     if (audio) { controllerShowTimeoutMs = 0; controllerHideOnTouch = false; defaultArtwork = null }
                     if (onFullscreen != null) setFullscreenButtonClickListener { full -> onFullscreen(full) }

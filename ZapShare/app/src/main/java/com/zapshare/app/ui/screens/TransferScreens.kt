@@ -115,6 +115,7 @@ import com.zapshare.app.transfer.Role
 import com.zapshare.app.transfer.TransferItem
 import com.zapshare.app.transfer.TransferManager
 import com.zapshare.app.ui.components.AppIcon
+import com.zapshare.app.ui.components.categoryStyle
 import com.zapshare.app.ui.components.AvatarBubble
 import com.zapshare.app.ui.components.EmptyState
 import com.zapshare.app.ui.components.FileThumb
@@ -343,7 +344,10 @@ private fun MediaList(cat: FileCategory, onBrowse: (() -> Unit)? = null) {
 }
 
 @Composable
-fun FileRow(uri: Uri, name: String, mime: String, subtitle: String, selected: Boolean? = null, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+fun FileRow(
+    uri: Uri, name: String, mime: String, subtitle: String, selected: Boolean? = null,
+    onLongClick: (() -> Unit)? = null, thumb: Boolean = true, onClick: () -> Unit
+) {
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
             .then(
@@ -353,7 +357,13 @@ fun FileRow(uri: Uri, name: String, mime: String, subtitle: String, selected: Bo
             .padding(8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        FileThumb(uri, mime, name, Modifier.size(48.dp))
+        if (thumb) FileThumb(uri, mime, name, Modifier.size(48.dp))
+        else {
+            val (icon, color) = categoryStyle(FileUtils.categoryOf(mime, name), name)
+            Box(Modifier.size(48.dp).clip(RoundedCornerShape(12.dp)).background(color.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = color)
+            }
+        }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -800,7 +810,10 @@ fun PcScreen(nav: NavController) {
                         Text("On the PC, disconnect from other Wi-Fi and join this one. Windows will say there is no internet. Stay connected anyway.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("Network: ${h.ssid}", fontWeight = FontWeight.Bold)
                         Text("Password: ${h.pass}", fontWeight = FontWeight.Bold)
-                    } else Text("The PC and this phone must be on the same Wi-Fi. Internet is not required.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else Text(
+                        "On the PC, stay connected to ${st.networkName ?: "the same Wi-Fi as this phone"}. Internet is not required.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     Spacer(Modifier.height(12.dp))
                     Text("2. In the PC browser, type this http address", style = MaterialTheme.typography.titleMedium)
                     Row(verticalAlignment = Alignment.CenterVertically) {

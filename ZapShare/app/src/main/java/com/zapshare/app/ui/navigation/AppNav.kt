@@ -3,6 +3,8 @@
 package com.zapshare.app.ui.navigation
 
 import android.net.Uri
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -115,8 +117,10 @@ import com.zapshare.app.ui.screens.SearchScreen
 import com.zapshare.app.ui.screens.SelectFilesScreen
 import com.zapshare.app.ui.screens.SendConnectScreen
 import com.zapshare.app.ui.screens.SettingsScreen
+import com.zapshare.app.ui.screens.StatusSaverScreen
 import com.zapshare.app.ui.screens.ToolsScreen
 import com.zapshare.app.ui.screens.TransferScreen
+import com.zapshare.app.ui.screens.ToolbarScreen
 import com.zapshare.app.ui.screens.VideoPlayerScreen
 import com.zapshare.app.ui.theme.BrandGradient
 import com.zapshare.app.ui.theme.Cyan3
@@ -149,7 +153,9 @@ object Routes {
     const val DOWNLOADER = "downloader"
     const val CONVERTER = "converter"
     const val SAFEBOX = "safebox"
+    const val STATUS = "status"
     const val SETTINGS = "settings"
+    const val TOOLBAR = "toolbar"
     const val PREMIUM = "premium"
 
     const val CLEAN = "clean"
@@ -251,6 +257,7 @@ fun ZapShareApp() {
     val route = backStack?.destination?.route
     val showBar = tabs.any { it.route == route }
     val incoming by IntentBus.incoming.collectAsState()
+    val openRoute by IntentBus.route.collectAsState()
 
     LaunchedEffect(Unit) { MusicController.connect(ctx) }
     FeatureExitAd(nav, ctx)
@@ -261,6 +268,16 @@ fun ZapShareApp() {
             null -> {}
         }
         IntentBus.incoming.value = null
+    }
+    LaunchedEffect(openRoute) {
+        val target = openRoute ?: return@LaunchedEffect
+        IntentBus.route.value = null
+        val tab = target in mainTabs
+        nav.navigate(target) {
+            if (tab) popUpTo(nav.graph.findStartDestination().id) { saveState = true }
+            launchSingleTop = true
+            restoreState = tab
+        }
     }
 
     Scaffold(
@@ -335,14 +352,19 @@ fun ZapShareApp() {
                 arguments = listOf(
                     navArgument("uri") { type = NavType.StringType; defaultValue = "" },
                     navArgument("title") { type = NavType.StringType; defaultValue = "" },
-                )
+                ),
+                exitTransition = { ExitTransition.None },
+                popExitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None }
             ) {
                 VideoPlayerScreen(Uri.parse(it.arguments?.getString("uri") ?: ""), it.arguments?.getString("title") ?: "", onBack = back)
             }
             composable(Routes.DOWNLOADER) { DownloaderScreen(nav) }
             composable(Routes.CONVERTER) { ConverterScreen(nav) }
             composable(Routes.SAFEBOX) { SafeboxScreen(nav) }
+            composable(Routes.STATUS) { StatusSaverScreen(nav) }
             composable(Routes.SETTINGS) { SettingsScreen(nav) }
+            composable(Routes.TOOLBAR) { ToolbarScreen(nav) }
             composable(Routes.PREMIUM) { PremiumScreen(nav) }
 
             composable(Routes.CLEAN) { CleanHubScreen(nav) }
@@ -377,7 +399,8 @@ private fun FeatureExitAd(nav: NavHostController, ctx: android.content.Context) 
             val from = previous
             val to = dest.route
             previous = to
-            val leftFeature = from != null && from !in mainTabs && from != Routes.PREMIUM && from != Routes.PERMS
+            val leftFeature = from != null && from !in mainTabs && from != Routes.PREMIUM && from != Routes.PERMS &&
+                from != Routes.VIDEO && !from.startsWith("video")
             if (leftFeature && to in mainTabs) ctx.findActivity()?.let { activity ->
                 activity.window.decorView.post {
                     activity.window.decorView.requestLayout()

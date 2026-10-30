@@ -51,6 +51,24 @@ object Prefs {
         get() = sp.getBoolean("keep_screen_on", true)
         set(v) = sp.edit().putBoolean("keep_screen_on", v).apply()
 
+    /** SAF tree the user picked as the folder for received and shared files. */
+    var saveTreeUri: String?
+        get() = sp.getString("save_tree", null)
+        set(v) = sp.edit().putString("save_tree", v).apply()
+
+    /** SAF tree for the WhatsApp status folder, when all-files access is not used. */
+    var statusTreeUri: String?
+        get() = sp.getString("status_tree", null)
+        set(v) = sp.edit().putString("status_tree", v).apply()
+
+    /** Notification-bar shortcut row. "white" or "color". */
+    var toolbarEnabled: Boolean
+        get() = sp.getBoolean("toolbar", false)
+        set(v) = sp.edit().putBoolean("toolbar", v).apply()
+    var toolbarStyle: String
+        get() = sp.getString("toolbar_style", "white") ?: "white"
+        set(v) = sp.edit().putString("toolbar_style", v).apply()
+
     // ---- Premium ----
     var premiumPurchased: Boolean
         get() = sp.getBoolean("premium", false)

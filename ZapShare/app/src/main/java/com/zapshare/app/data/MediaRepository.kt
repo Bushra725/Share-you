@@ -150,6 +150,37 @@ object MediaRepository {
         }.sortedBy { it.label.lowercase() }
     }
 
+    /** Apps whose notifications the user can block: user apps and system apps that show an icon. */
+    suspend fun notifiableApps(ctx: Context): List<AppInfo> = withContext(Dispatchers.IO) {
+        val pm = ctx.packageManager
+        val installed = if (Build.VERSION.SDK_INT >= 33)
+            pm.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+        else @Suppress("DEPRECATION") pm.getInstalledApplications(0)
+        installed.mapNotNull { ai ->
+            if (ai.packageName == ctx.packageName || ai.packageName == "android") return@mapNotNull null
+            if (!ai.enabled || ai.icon == 0) return@mapNotNull null
+            runCatching {
+                @Suppress("DEPRECATION") val pi = pm.getPackageInfo(ai.packageName, 0)
+                val system = (ai.flags and ApplicationInfo.FLAG_SYSTEM) != 0 &&
+                    (ai.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0
+                val splits = ai.splitSourceDirs?.toList() ?: emptyList()
+                val label = ai.loadLabel(pm).toString().trim()
+                if (label.isEmpty()) return@runCatching null
+                AppInfo(
+                    packageName = ai.packageName,
+                    label = label,
+                    versionName = pi.versionName,
+                    apkPath = ai.sourceDir ?: "",
+                    size = runCatching { File(ai.sourceDir ?: "").length() }.getOrDefault(0L) +
+                        splits.sumOf { runCatching { File(it).length() }.getOrDefault(0L) },
+                    splitPaths = splits,
+                    installTime = pi.firstInstallTime,
+                    isSystem = system
+                )
+            }.getOrNull()
+        }.distinctBy { it.packageName }.sortedBy { it.label.lowercase() }
+    }
+
     data class StorageInfo(val total: Long, val free: Long) { val used get() = total - free }
 
     fun storage(): StorageInfo {

@@ -41,7 +41,8 @@ class PcServer(
     override fun serve(session: IHTTPSession): Response {
         val uri = session.uri
         val response = if (uri == "/" || uri == "/index.html") {
-            newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", page)
+            val html = page.replace("data-key=\"\"", "data-key=\"$token\"")
+            newFixedLengthResponse(Response.Status.OK, "text/html; charset=utf-8", html)
         } else {
             val key = session.parameters["k"]?.firstOrNull() ?: session.headers["x-zap-key"]
             if (key != token) newFixedLengthResponse(Response.Status.FORBIDDEN, MIME_PLAINTEXT, "Wrong access code")
@@ -146,6 +147,7 @@ object PcShare {
         val url: String? = null,
         val token: String = "",
         val hotspot: HotspotCreds? = null,
+        val networkName: String? = null,
         val shared: List<ShareItem> = emptyList(),
         val received: List<ShareItem> = emptyList(),
         val log: List<String> = emptyList(),
@@ -170,13 +172,15 @@ object PcShare {
             }
             val app = ctx.applicationContext
             System.setProperty("java.io.tmpdir", app.cacheDir.absolutePath)
-            val ip = waitForAddress(app, withHotspot, before)
+            val lan = if (withHotspot) null else NetUtils.clientWifi(app)
+            val ip = lan?.ip ?: waitForAddress(app, withHotspot, before)
                 ?: throw IllegalStateException(
                     if (withHotspot) "Hotspot started, but this phone has no address yet. Turn Wi-Fi on and try again."
                     else "No Wi-Fi address found. Join the same Wi-Fi as the PC, or create a hotspot."
                 )
             // The soft-AP network appears a moment after its IP. Bind to that network, then open an IPv4 socket.
             val cm = app.getSystemService(ConnectivityManager::class.java)
+            val wifiName = lan?.name
             if (withHotspot) {
                 var ap: android.net.Network? = null
                 repeat(20) {
@@ -193,13 +197,21 @@ object PcShare {
                     cm.bindProcessToNetwork(null)
                 }
             } else {
-                cm.bindProcessToNetwork(null)
+                val wifi = lan?.network ?: NetUtils.networkOwning(app, ip)
+                if (wifi != null) {
+                    cm.bindProcessToNetwork(wifi)
+                    apNetwork = wifi
+                    networkBound = true
+                } else {
+                    apNetwork = null
+                    cm.bindProcessToNetwork(null)
+                }
             }
             val token = (1..6).map { Random.nextInt(10) }.joinToString("")
             server = listen(app, ip, token)
             state.update {
                 it.copy(
-                    running = true, token = token, hotspot = creds, error = null,
+                    running = true, token = token, hotspot = creds, networkName = wifiName, error = null,
                     url = pageUrl(ip, token)
                 )
             }

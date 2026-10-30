@@ -1007,7 +1007,7 @@ fun NotificationBlockerScreen(nav: NavController) {
     val records by NotifyBlock.records.collectAsState()
     var tab by remember { mutableIntStateOf(0) }
     val apps by produceState<List<AppInfo>?>(null) {
-        value = MediaRepository.apps(ctx).filter { it.packageName != ctx.packageName }
+        value = MediaRepository.notifiableApps(ctx)
     }
     val labels = remember(apps) { apps.orEmpty().associate { it.packageName to it.label } }
 

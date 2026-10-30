@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Share</string>
+    <string name="app_name">Share you</string>
     <string name="nav_home">Home</string>
     <string name="nav_files">Files</string>
     <string name="nav_player">Player</string>
@@ -68,7 +68,7 @@
     <string name="save">Save</string>
     <string name="go_premium">Go Premium</string>
     <string name="premium_banner_sub">Unlimited file size • No ads • Safebox</string>
-    <string name="premium_title">ZapShare Premium</string>
+    <string name="premium_title">Share you Premium</string>
     <string name="premium_feat_size">Send files of any size (free: up to 100 MB each)</string>
     <string name="premium_feat_ads">No ads, ever</string>
     <string name="premium_feat_safebox">Safebox: hide private photos, videos &amp; files</string>

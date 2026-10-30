@@ -11,6 +11,7 @@ import com.zapshare.app.data.Prefs
 import com.zapshare.app.downloader.VideoDownloader
 import com.zapshare.app.premium.Ads
 import com.zapshare.app.premium.Premium
+import com.zapshare.app.toolbar.ShareToolbar
 import com.zapshare.app.transfer.TransferManager
 
 class ZapApp : Application(), ImageLoaderFactory {
@@ -23,6 +24,7 @@ class ZapApp : Application(), ImageLoaderFactory {
         Premium.init(this)
         Ads.init(this)
         VideoDownloader.initAsync(this)
+        ShareToolbar.sync(this)
     }
 
     private fun createChannels() {

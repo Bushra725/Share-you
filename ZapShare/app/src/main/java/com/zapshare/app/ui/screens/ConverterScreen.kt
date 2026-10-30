@@ -93,7 +93,11 @@ object ConverterJob {
                 val (msg, uri) = block { p -> state.value = state.value.copy(progress = p) }
                 state.value = State(message = msg, lastUri = uri, lastName = msg)
             } catch (e: Throwable) {
-                state.value = State(message = "Failed: ${e.message ?: "unknown error"}")
+                val raw = e.message?.trim().orEmpty()
+                val detail = if (raw.isEmpty() || raw.equals("unknown error", true)) {
+                    "Could not convert this file. Try another video."
+                } else raw
+                state.value = State(message = "Failed: $detail")
             }
         }
     }
@@ -252,8 +256,8 @@ private val outputFormats = listOf(
     OutputFormat(Converters.MediaPreset.TO_WAV, "WAV", "Uncompressed audio", audio = true),
     OutputFormat(Converters.MediaPreset.TO_OGG, "OGG", "Compressed audio", audio = true),
     OutputFormat(Converters.MediaPreset.TO_MP4, "MP4", "Standard video, H.264", audio = false),
-    OutputFormat(Converters.MediaPreset.COMPRESS_720, "720p", "Smaller video, good quality", audio = false),
-    OutputFormat(Converters.MediaPreset.COMPRESS_480, "480p", "Smallest video file", audio = false),
+    OutputFormat(Converters.MediaPreset.COMPRESS_720, "720p", "Lighter picture, much smaller file", audio = false),
+    OutputFormat(Converters.MediaPreset.COMPRESS_480, "480p", "Lowest picture, smallest file", audio = false),
     OutputFormat(Converters.MediaPreset.TO_GIF, "GIF", "First 10 seconds, no sound", audio = false),
     OutputFormat(Converters.MediaPreset.TO_MKV, "MKV", "New container, same quality", audio = false),
 )
@@ -289,7 +293,11 @@ private fun MediaOptionsDialog(ctx: Context, uri: Uri, onClose: () -> Unit) {
                 ConverterJob.run("Converting to ${choice.badge}") { report ->
                     val dur = durationOf(ctx, uri)
                     val out = Converters.convertMedia(ctx, uri, meta.name, choice.preset, dur, report)
-                    "Saved ${meta.name.substringBeforeLast('.')}.${choice.preset.ext}" to out
+                    val base = "${meta.name.substringBeforeLast('.')}.${choice.preset.ext}"
+                    val note = if (choice.preset == Converters.MediaPreset.COMPRESS_720 || choice.preset == Converters.MediaPreset.COMPRESS_480) {
+                        "Saved $base (${choice.badge})"
+                    } else "Saved $base"
+                    note to out
                 }
             }) { Text("Convert") }
         },

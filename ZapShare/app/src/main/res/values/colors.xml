@@ -2,6 +2,6 @@
     <color name="brand_cyan_1">#28D4FF</color>
     <color name="brand_cyan_2">#16C9F6</color>
     <color name="brand_cyan_3">#00C6F8</color>
-    <color name="ic_launcher_background">#00C6F8</color>
+    <color name="ic_launcher_background">#16C9F6</color>
     <color name="window_bg">#F4F7FA</color>
 </resources>

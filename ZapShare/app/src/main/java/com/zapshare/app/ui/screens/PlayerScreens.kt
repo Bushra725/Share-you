@@ -66,7 +66,9 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -111,11 +113,15 @@ fun Context.findActivity(): Activity? {
     return null
 }
 
+/** Survives leaving the player for a video, so Back returns to Videos instead of Music. */
+private var playerSection = 0
+
 // ================================================================================ PLAYER TAB
 @Composable
 fun PlayerScreen(nav: NavController) {
     val ctx = LocalContext.current
-    var tab by remember { mutableIntStateOf(0) }
+    var tab by rememberSaveable { mutableIntStateOf(playerSection) }
+    SideEffect { playerSection = tab }
     val askNotif = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
     LaunchedEffect(Unit) {
         val perms = Permissions.notifications()
@@ -266,19 +272,29 @@ fun VideoPlayerScreen(uri: Uri, title: String, onBack: () -> Unit) {
     var player by remember { mutableStateOf<ExoPlayer?>(null) }
     var speedMenu by remember { mutableStateOf(false) }
     var landscape by remember { mutableStateOf(false) }
+    var closed by remember { mutableStateOf(false) }
 
     fun applyOrientation(land: Boolean) {
         landscape = land
         val a = activity ?: return
-        a.requestedOrientation = if (land) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        a.requestedOrientation = if (land) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         val c = WindowCompat.getInsetsController(a.window, a.window.decorView)
         if (land) {
             c.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             c.hide(WindowInsetsCompat.Type.systemBars())
         } else c.show(WindowInsetsCompat.Type.systemBars())
     }
-    DisposableEffect(Unit) { onDispose { applyOrientation(false) } }
-    BackHandler { if (landscape) applyOrientation(false) else onBack() }
+    fun leave() {
+        if (closed) return
+        closed = true
+        player?.playWhenReady = false
+        player?.stop()
+        val land = landscape
+        onBack()
+        if (land) activity?.window?.decorView?.post { applyOrientation(false) }
+    }
+    DisposableEffect(Unit) { onDispose { if (!closed) applyOrientation(false) } }
+    BackHandler { leave() }
 
     // Portrait: top bar + video fitted between the status bar and the navigation bar, so the
     // time bar, fullscreen and settings buttons are never hidden behind the system bars.
@@ -287,8 +303,8 @@ fun VideoPlayerScreen(uri: Uri, title: String, onBack: () -> Unit) {
         Modifier.fillMaxSize().background(Color.Black)
             .then(if (landscape) Modifier.displayCutoutPadding() else Modifier.systemBarsPadding())
     ) {
-        if (!landscape) Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
+        if (!landscape && !closed) Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = { leave() }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
             Text(title, color = Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             Box {
                 IconButton(onClick = { speedMenu = true }) { Icon(Icons.Filled.Speed, "Speed", tint = Color.White) }

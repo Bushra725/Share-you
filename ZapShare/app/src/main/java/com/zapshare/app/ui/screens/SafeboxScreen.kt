@@ -129,7 +129,7 @@ private fun SafeboxContent(nav: NavController) {
             Vault.lock(ctx)
         }
     }
-    var setupQuestions by remember { mutableStateOf(false) }
+    var ready by remember { mutableStateOf(Vault.isSetUp()) }
     var overlay by remember { mutableStateOf<VaultOverlay?>(null) }
     var usePattern by remember { mutableStateOf(Vault.hasPattern()) }
     BackHandler {
@@ -138,23 +138,15 @@ private fun SafeboxContent(nav: NavController) {
 
     Box(Modifier.fillMaxSize()) {
         when {
-            !Vault.isSetUp() -> PinScreen(
+            !ready -> PinScreen(
                 "Create a Safebox PIN",
                 "Choose 4–6 digits. You'll need it to open your private files.",
                 confirm = true,
                 onBack = leave
             ) { pin ->
                 Vault.setup(ctx, pin)
-                setupQuestions = true
+                ready = true
                 null
-            }
-            setupQuestions -> QuestionEditor(
-                title = "Security questions",
-                subtitle = "These answers reset your PIN or pattern if you forget them.",
-                onBack = leave
-            ) { answers ->
-                Vault.saveQuestions(answers)
-                setupQuestions = false
             }
             !unlocked && overlay == VaultOverlay.Reset -> ResetLock(onBack = { overlay = null }) { overlay = null }
             !unlocked && usePattern && Vault.hasPattern() -> PatternUnlock(
@@ -387,9 +379,14 @@ private fun PinScreen(
         working = true
         val entered = pin
         scope.launch {
-            error = onSubmit(entered)
-            working = false
-            if (error != null) pin = ""
+            try {
+                error = onSubmit(entered)
+            } catch (e: Exception) {
+                error = e.message ?: "Could not save the PIN"
+            } finally {
+                working = false
+                if (error != null) pin = ""
+            }
         }
     }
 

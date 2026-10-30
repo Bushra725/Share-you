@@ -22,6 +22,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
@@ -127,6 +129,7 @@ import com.zapshare.app.ui.theme.CatPhoto
 import com.zapshare.app.ui.theme.CatSafe
 import com.zapshare.app.ui.theme.CatVideo
 import com.zapshare.app.premium.AdBanner
+import com.zapshare.app.premium.NativeAdCard
 import com.zapshare.app.ui.theme.BrandGradient
 import com.zapshare.app.ui.theme.Cyan3
 import com.zapshare.app.ui.theme.Navy
@@ -348,7 +351,7 @@ fun CategoryScreen(nav: NavController, cat: FileCategory) {
                 IconButton(onClick = { files?.let { selected.clear(); selected.addAll(it) } }) { Icon(Icons.Filled.SelectAll, "Select all") }
                 IconButton(onClick = {
                     Selection.replace(selected.map { it.toShareItem() }); selected.clear(); nav.navigate(Routes.SEND)
-                }) { Icon(Icons.Filled.Send, "Send with ZapShare") }
+                }) { Icon(Icons.Filled.Send, "Send with Share you") }
                 IconButton(onClick = { FileUtils.shareExternal(ctx, selected.map { it.uri }) }) { Icon(Icons.Filled.Share, "Share") }
                 IconButton(onClick = {
                     SafeboxQueue.pending.addAll(selected.map { it.uri }); selected.clear(); nav.navigate(Routes.SAFEBOX)
@@ -494,7 +497,7 @@ fun BrowserScreen(nav: NavController) {
         val actions = buildList<Pair<String, () -> Unit>> {
             if (!f.isDirectory) {
                 add("Open with…" to { FileUtils.openWith(ctx, Uri.fromFile(f), FileUtils.mimeOf(f.name)) })
-                add("Send with ZapShare" to { Selection.replace(listOf(f.toMediaFile().toShareItem())); nav.navigate(Routes.SEND) })
+                add("Send with Share you" to { Selection.replace(listOf(f.toMediaFile().toShareItem())); nav.navigate(Routes.SEND) })
                 add("Share" to { FileUtils.shareExternal(ctx, listOf(Uri.fromFile(f))) })
                 add("Move to Safebox" to { SafeboxQueue.pending.add(Uri.fromFile(f)); nav.navigate(Routes.SAFEBOX) })
             }
@@ -570,39 +573,49 @@ fun StorageScanScreen(nav: NavController) {
     ZapScaffold("Storage scan", onBack = { nav.popBackStack() }, actions = {
         if (!scanning) TextButton(onClick = { scope.launch { StorageScan.run(ctx) } }) { Text("Rescan") }
     }) { pad ->
-        Column(
-            Modifier.padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            val current = report
-            if (scanning || current == null) {
-                Column(Modifier.fillMaxWidth().padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(color = Cyan3)
-                    Spacer(Modifier.height(16.dp))
-                    Text(status, style = MaterialTheme.typography.titleMedium)
-                    Text("Scanning stays on this phone.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            } else {
-                Text("Scan report", style = MaterialTheme.typography.titleMedium)
-                ScanStat(Icons.Filled.Folder, "All files", "${current.all.size} files", FileUtils.formatSize(current.allSize), Cyan3) {
-                    nav.navigate(Routes.scanList("all"))
-                }
-                ScanStat(Icons.Filled.CleaningServices, "Junk files", "${current.junk.size} files", FileUtils.formatSize(current.junkSize), Color(0xFFEF4444)) {
-                    nav.navigate(Routes.scanList("junk"))
-                }
-                ScanStat(Icons.Filled.NewReleases, "New files", "${current.fresh.size} files", "Last 7 days • ${FileUtils.formatSize(current.freshSize)}", Color(0xFF16A34A)) {
-                    nav.navigate(Routes.scanList("new"))
-                }
-                Text(
-                    "Junk is cache, temporary files, and thumbnails. Tap Junk files to choose what to remove.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (!Permissions.hasAllFiles()) {
-                    SectionCard {
-                        Text("Allow all-files access to include app cache in this scan.", style = MaterialTheme.typography.bodyMedium)
-                        TextButton(onClick = { ctx.startActivity(Permissions.allFilesIntent(ctx)) }) { Text("Allow access") }
+        BoxWithConstraints(Modifier.padding(pad).fillMaxSize()) {
+            val roomy = maxHeight >= 680.dp
+            Column(
+                Modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                val current = report
+                if (scanning || current == null) {
+                    Column(Modifier.fillMaxWidth().padding(top = 48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Cyan3)
+                        Spacer(Modifier.height(16.dp))
+                        Text(status, style = MaterialTheme.typography.titleMedium)
+                        Text("Scanning stays on this phone.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                } else {
+                    Text("Scan report", style = MaterialTheme.typography.titleMedium)
+                    ScanStat(Icons.Filled.Folder, "All files", "${current.all.size} files", FileUtils.formatSize(current.allSize), Cyan3) {
+                        nav.navigate(Routes.scanList("all"))
+                    }
+                    ScanStat(Icons.Filled.CleaningServices, "Junk files", "${current.junk.size} files", FileUtils.formatSize(current.junkSize), Color(0xFFEF4444)) {
+                        nav.navigate(Routes.scanList("junk"))
+                    }
+                    ScanStat(Icons.Filled.NewReleases, "New files", "${current.fresh.size} files", "Last 7 days • ${FileUtils.formatSize(current.freshSize)}", Color(0xFF16A34A)) {
+                        nav.navigate(Routes.scanList("new"))
+                    }
+                    ScanStat(Icons.Filled.Storage, "Big files", "${current.big.size} files", "Over 50 MB • ${FileUtils.formatSize(current.bigSize)}", Color(0xFF7C3AED)) {
+                        nav.navigate(Routes.scanList("big"))
+                    }
+                    ScanStat(Icons.Filled.ContentCopy, "Redundant files", "${current.redundant.size} files", FileUtils.formatSize(current.redundantSize), Color(0xFFEA580C)) {
+                        nav.navigate(Routes.scanList("redundant"))
+                    }
+                    Text(
+                        "Junk is cache, temporary files, and thumbnails. Big files are over 50 MB. Redundant files are extra copies.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (!Permissions.hasAllFiles()) {
+                        SectionCard {
+                            Text("Allow all-files access to include app cache in this scan.", style = MaterialTheme.typography.bodyMedium)
+                            TextButton(onClick = { ctx.startActivity(Permissions.allFilesIntent(ctx)) }) { Text("Allow access") }
+                        }
+                    }
+                    if (roomy) NativeAdCard() else AdBanner(onRemoveAds = { nav.navigate(Routes.PREMIUM) })
                 }
             }
         }
@@ -626,6 +639,18 @@ private fun ScanStat(icon: ImageVector, title: String, count: String, detail: St
     }
 }
 
+/** Readable place for a junk row. Gallery trash folders use names like ".!%#@$". */
+private fun junkPlace(path: String?): String {
+    val p = path?.replace('\\', '/')?.lowercase().orEmpty()
+    return when {
+        p.contains("/.trash/") || p.contains("/trash/") -> "Gallery trash"
+        p.contains("/.thumbnails/") || p.contains("/thumbnails/") -> "Thumbnails"
+        p.contains("/cache/") || p.contains("/.cache/") || p.contains("/code_cache/") -> "Cache"
+        p.contains("/lost.dir/") -> "Lost files"
+        else -> path?.substringBeforeLast('/')?.substringAfterLast('/').orEmpty()
+    }
+}
+
 @Composable
 fun ScanListScreen(nav: NavController, kind: String) {
     val ctx = LocalContext.current
@@ -633,14 +658,18 @@ fun ScanListScreen(nav: NavController, kind: String) {
     val files = when (kind) {
         "junk" -> report?.junk
         "new" -> report?.fresh
+        "big" -> report?.big
+        "redundant" -> report?.redundant
         else -> report?.all
     }
     val title = when (kind) {
         "junk" -> "Junk files"
         "new" -> "New files"
+        "big" -> "Big files"
+        "redundant" -> "Redundant files"
         else -> "All files"
     }
-    val selectable = kind == "junk"
+    val selectable = kind == "junk" || kind == "big" || kind == "redundant"
     val selected = remember(kind) { mutableStateListOf<MediaFile>() }
     val deleter = rememberDeleter {
         selected.clear()
@@ -669,8 +698,18 @@ fun ScanListScreen(nav: NavController, kind: String) {
             when {
                 list == null -> EmptyState(Icons.AutoMirrored.Filled.ManageSearch, "Scan storage from the Files tab first.")
                 list.isEmpty() -> EmptyState(
-                    if (kind == "junk") Icons.Filled.CleaningServices else Icons.Filled.Folder,
-                    if (kind == "junk") "No junk files found." else "Nothing in this list."
+                    when (kind) {
+                        "junk" -> Icons.Filled.CleaningServices
+                        "big" -> Icons.Filled.Storage
+                        "redundant" -> Icons.Filled.ContentCopy
+                        else -> Icons.Filled.Folder
+                    },
+                    when (kind) {
+                        "junk" -> "No junk files found."
+                        "big" -> "No files over 50 MB."
+                        "redundant" -> "No extra copies found."
+                        else -> "Nothing in this list."
+                    }
                 )
                 else -> LazyColumn(contentPadding = PaddingValues(12.dp)) {
                     item {
@@ -690,14 +729,14 @@ fun ScanListScreen(nav: NavController, kind: String) {
                         val sel = f in selected
                         val sub = buildString {
                             append(FileUtils.formatSize(f.size))
-                            f.path?.substringBeforeLast('/')?.substringAfterLast('/')?.let { folder ->
-                                if (folder.isNotBlank()) append(" • $folder")
-                            }
+                            val folder = if (kind == "junk") junkPlace(f.path) else f.path?.substringBeforeLast('/')?.substringAfterLast('/').orEmpty()
+                            if (folder.isNotBlank()) append(" • $folder")
                         }
                         FileRow(
                             f.uri, f.name, f.mime, sub,
                             selected = if (selectable) sel else null,
-                            onLongClick = { openFile(nav, ctx, f, list) }
+                            onLongClick = { openFile(nav, ctx, f, list) },
+                            thumb = kind != "junk"
                         ) {
                             if (selectable) {
                                 if (sel) selected.remove(f) else selected.add(f)
@@ -810,7 +849,7 @@ fun AppsScreen(nav: NavController) {
     menu?.let { a ->
         val opts = listOf<Pair<String, () -> Unit>>(
             "Open" to { ctx.packageManager.getLaunchIntentForPackage(a.packageName)?.let { ctx.startActivity(it) } },
-            "Send with ZapShare" to { Selection.replace(listOf(a.toShareItem())); nav.navigate(Routes.SEND) },
+            "Send with Share you" to { Selection.replace(listOf(a.toShareItem())); nav.navigate(Routes.SEND) },
             "Share APK" to { FileUtils.shareExternal(ctx, listOf(Uri.fromFile(File(a.apkPath))), "application/vnd.android.package-archive") },
             "Backup APK to Download/ZapShare/Apps" to {
                 runCatching { FileUtils.copyToDownloads(ctx, Uri.fromFile(File(a.apkPath)), a.toShareItem().name, "application/vnd.android.package-archive", "Apps") }

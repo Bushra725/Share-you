@@ -88,7 +88,7 @@ class TransferService : Service() {
             )
             return NotificationCompat.Builder(ctx, ZapApp.CH_TRANSFER)
                 .setSmallIcon(R.drawable.ic_stat_zap)
-                .setContentTitle("ZapShare")
+                .setContentTitle("Share you")
                 .setContentText(text)
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)

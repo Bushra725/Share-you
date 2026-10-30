@@ -18,6 +18,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -47,6 +48,7 @@ import com.google.android.gms.ads.interstitial.InterstitialAd
 import com.google.android.gms.ads.interstitial.InterstitialAdLoadCallback
 import com.google.android.gms.ads.nativead.NativeAd
 import com.google.android.gms.ads.nativead.NativeAdView
+import kotlinx.coroutines.delay
 import com.google.android.gms.ads.rewarded.RewardedAd
 import com.google.android.gms.ads.rewarded.RewardedAdLoadCallback
 import com.zapshare.app.R
@@ -281,13 +283,26 @@ fun NativeAdCard(modifier: Modifier = Modifier) {
     if (premium) return
     val context = LocalContext.current
     var nativeAd by remember { mutableStateOf<NativeAd?>(null) }
+    var failed by remember { mutableStateOf(false) }
     DisposableEffect(Unit) {
         val loader = AdLoader.Builder(context, Ads.NATIVE_UNIT_ID)
             .forNativeAd { nativeAd = it }
-            .withAdListener(object : AdListener() {})
+            .withAdListener(object : AdListener() {
+                override fun onAdFailedToLoad(error: LoadAdError) { failed = true }
+            })
             .build()
         loader.loadAd(AdRequest.Builder().build())
         onDispose { nativeAd?.destroy() }
+    }
+    LaunchedEffect(nativeAd) {
+        if (nativeAd == null) {
+            delay(3500)
+            if (nativeAd == null) failed = true
+        }
+    }
+    if (failed) {
+        AdBanner(onRemoveAds = {}, modifier = modifier)
+        return
     }
     val ad = nativeAd
     if (ad == null) {

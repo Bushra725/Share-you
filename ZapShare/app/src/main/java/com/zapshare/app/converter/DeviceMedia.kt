@@ -1,9 +1,14 @@
 package com.zapshare.app.converter
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.ImageFormat
+import android.graphics.Rect
+import android.graphics.YuvImage
 import android.media.Image
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMetadataRetriever
@@ -11,6 +16,7 @@ import android.media.MediaMuxer
 import android.os.Build
 import com.github.axet.lamejni.Lame
 import com.github.axet.vorbisjni.Vorbis
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -117,41 +123,266 @@ object DeviceMedia {
 
     private fun toGif(input: File, output: File, durationMs: Long, onProgress: (Float) -> Unit) {
         requireVideo(input)
+        if (gifFromRetriever(input, output, durationMs, onProgress) && output.length() > 32) return
+        output.delete()
+        if (!gifFromDecoder(input, output, durationMs, onProgress) || output.length() <= 32) {
+            output.delete()
+            throw IllegalStateException("Could not read the picture in this video.")
+        }
+    }
+
+    /** One sequential decode of the first few seconds. Seeking each frame was slow and often black. */
+    private fun gifFromDecoder(input: File, output: File, durationMs: Long, onProgress: (Float) -> Unit): Boolean {
+        val ex = openExtractor(input)
+        val stream = FileOutputStream(output)
+        var gif: GifWriter? = null
+        var decoder: MediaCodec? = null
+        return try {
+            val vIndex = findTrack(ex, "video/")
+            if (vIndex < 0) return false
+            ex.selectTrack(vIndex)
+            val srcFmt = ex.getTrackFormat(vIndex)
+            val mime = srcFmt.getString(MediaFormat.KEY_MIME) ?: return false
+            val (srcW, srcH) = sizeOf(srcFmt)
+            val rotation = if (srcFmt.containsKey(MediaFormat.KEY_ROTATION)) srcFmt.getInteger(MediaFormat.KEY_ROTATION) else 0
+            val longSide = maxOf(srcW, srcH).coerceAtLeast(1)
+            val scale = minOf(1f, 720f / longSide)
+            var outW = even((srcW * scale).toInt()).coerceIn(2, 720)
+            var outH = even((srcH * scale).toInt()).coerceIn(2, 720)
+            if (rotation == 90 || rotation == 270) {
+                val swap = outW
+                outW = outH
+                outH = swap
+            }
+            val limitUs = minOf((durationMs.takeIf { it > 0 } ?: 6_000L) * 1000L, 6_000_000L)
+            val stepUs = 1_000_000L / 6
+            val targetFrames = 24
+            val dec = MediaCodec.createDecoderByType(mime)
+            decoder = dec
+            val flexible = videoDecoderFormat(srcFmt).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            }
+            try {
+                dec.configure(flexible, null, null, 0)
+            } catch (e: Exception) {
+                dec.reset()
+                dec.configure(videoDecoderFormat(srcFmt), null, null, 0)
+            }
+            dec.start()
+            var inputDone = false
+            var outputDone = false
+            var frames = 0
+            var nextUs = 0L
+            var idle = 0
+            val info = MediaCodec.BufferInfo()
+            while (!outputDone && frames < targetFrames) {
+                var moved = false
+                if (!inputDone) {
+                    val inIndex = dec.dequeueInputBuffer(10_000)
+                    if (inIndex >= 0) {
+                        val buf = dec.getInputBuffer(inIndex)
+                        if (buf == null) {
+                            dec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            val size = ex.readSampleData(buf, 0)
+                            val pts = ex.sampleTime
+                            if (size < 0 || (pts > limitUs && frames > 0)) {
+                                dec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                dec.queueInputBuffer(inIndex, 0, size, pts.coerceAtLeast(0), 0)
+                                ex.advance()
+                            }
+                        }
+                        moved = true
+                    }
+                }
+                val outIndex = dec.dequeueOutputBuffer(info, 10_000)
+                if (outIndex >= 0) {
+                    moved = true
+                    val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                    val image = if (info.size > 0) dec.getOutputImage(outIndex) else null
+                    if (image != null) {
+                        try {
+                            if (info.presentationTimeUs >= nextUs && frames < targetFrames) {
+                                val raw = imageToBitmap(
+                                    image,
+                                    if (rotation == 90 || rotation == 270) outH else outW,
+                                    if (rotation == 90 || rotation == 270) outW else outH
+                                )
+                                val frame = rotateBitmap(raw, rotation)
+                                if (!looksBlank(frame)) {
+                                    if (gif == null) gif = GifWriter(stream, frame.width, frame.height)
+                                    gif.frame(frame, 16)
+                                    frames++
+                                    nextUs += stepUs
+                                    onProgress(frames / targetFrames.toFloat())
+                                }
+                                if (frame !== raw) raw.recycle()
+                                frame.recycle()
+                            }
+                        } finally {
+                            image.close()
+                        }
+                    }
+                    dec.releaseOutputBuffer(outIndex, false)
+                    if (eos || info.presentationTimeUs > limitUs) outputDone = true
+                } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) moved = true
+                if (moved) idle = 0 else if (++idle > 40) break
+            }
+            gif?.close()
+            frames > 0
+        } catch (e: Exception) {
+            false
+        } finally {
+            runCatching { decoder?.stop() }
+            runCatching { decoder?.release() }
+            runCatching { stream.close() }
+            ex.release()
+        }
+    }
+
+    private fun gifFromRetriever(input: File, output: File, durationMs: Long, onProgress: (Float) -> Unit): Boolean {
         val retriever = MediaMetadataRetriever()
         var gif: GifWriter? = null
         val stream = FileOutputStream(output)
-        try {
+        return try {
             retriever.setDataSource(input.absolutePath)
-            val dur = durationMs.takeIf { it > 0 }
+            val durMs = durationMs.takeIf { it > 0 }
                 ?: retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
-                ?: 10_000L
-            val limitUs = minOf(dur, 10_000L).coerceAtLeast(400) * 1000L
-            val stepUs = 1_000_000L / 8
+                ?: 6_000L
+            val limitUs = minOf(durMs, 6_000L) * 1000L
+            val stepUs = 200_000L
             var time = 0L
             var frames = 0
-            while (time < limitUs && frames < 80) {
-                val frame = retriever.getFrameAtTime(time, MediaMetadataRetriever.OPTION_CLOSEST)
-                if (frame != null) {
-                    val w = frame.width.coerceAtMost(480).coerceAtLeast(2)
-                    val h = (frame.height * (w.toFloat() / frame.width)).toInt().coerceAtLeast(2)
-                    if (gif == null) gif = GifWriter(stream, w, h)
-                    gif.frame(frame, 12)
-                    frame.recycle()
-                    frames++
-                    onProgress(frames / 80f)
+            while (time <= limitUs && frames < 20) {
+                val grabbed = retriever.getFrameAtTime(time, MediaMetadataRetriever.OPTION_CLOSEST)
+                if (grabbed != null) {
+                    val soft = softwareBitmap(grabbed)
+                    if (soft !== grabbed) grabbed.recycle()
+                    if (looksBlank(soft)) {
+                        soft.recycle()
+                    } else {
+                        val frame = scaleBitmap(soft, 720)
+                        if (frame !== soft) soft.recycle()
+                        if (gif == null) gif = GifWriter(stream, frame.width.coerceAtLeast(2), frame.height.coerceAtLeast(2))
+                        gif.frame(frame, 20)
+                        frames++
+                        onProgress(frames / 20f)
+                        frame.recycle()
+                    }
                 }
                 time += stepUs
             }
-            if (gif == null || frames == 0) throw IllegalStateException("This video has no frames to convert.")
-            gif.close()
-        } catch (e: IllegalStateException) {
-            throw e
+            if (gif == null || frames < 2) false
+            else {
+                gif.close()
+                true
+            }
         } catch (e: Exception) {
-            throw IllegalStateException("Could not read this video. Choose another file and try again.")
+            false
         } finally {
             runCatching { retriever.release() }
             runCatching { stream.close() }
         }
+    }
+
+    private fun softwareBitmap(src: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(src.width.coerceAtLeast(2), src.height.coerceAtLeast(2), Bitmap.Config.ARGB_8888)
+        android.graphics.Canvas(out).drawBitmap(src, 0f, 0f, null)
+        return out
+    }
+
+    private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap {
+        if (degrees == 0) return src
+        val matrix = android.graphics.Matrix().apply { postRotate(degrees.toFloat()) }
+        val out = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+        return out
+    }
+
+    private fun scaleBitmap(src: Bitmap, maxSide: Int): Bitmap {
+        val longSide = maxOf(src.width, src.height).coerceAtLeast(1)
+        if (longSide <= maxSide) return src
+        val scale = maxSide.toFloat() / longSide
+        return Bitmap.createScaledBitmap(src, even((src.width * scale).toInt()), even((src.height * scale).toInt()), true)
+    }
+
+    private fun looksBlank(bmp: Bitmap): Boolean {
+        val stepX = (bmp.width / 6).coerceAtLeast(1)
+        val stepY = (bmp.height / 6).coerceAtLeast(1)
+        var bright = 0
+        var y = 0
+        while (y < bmp.height) {
+            var x = 0
+            while (x < bmp.width) {
+                val c = bmp.getPixel(x, y)
+                val sum = ((c shr 16) and 0xFF) + ((c shr 8) and 0xFF) + (c and 0xFF)
+                if (sum > 30 && ++bright >= 4) return false
+                x += stepX
+            }
+            y += stepY
+        }
+        return true
+    }
+
+    /** Android's JPEG converter understands the phone's YUV layout. A hand-rolled read was coming out black. */
+    private fun imageToBitmap(image: Image, outW: Int, outH: Int): Bitmap {
+        val nv21 = yuvToNv21(image)
+        val w = image.cropRect.width() and 1.inv()
+        val h = image.cropRect.height() and 1.inv()
+        if (w < 2 || h < 2 || nv21.size < w * h * 3 / 2) {
+            return Bitmap.createBitmap(outW.coerceAtLeast(2), outH.coerceAtLeast(2), Bitmap.Config.ARGB_8888)
+        }
+        val jpeg = ByteArrayOutputStream()
+        val ok = YuvImage(nv21, ImageFormat.NV21, w, h, null).compressToJpeg(Rect(0, 0, w, h), 70, jpeg)
+        val decoded = if (ok) BitmapFactory.decodeByteArray(jpeg.toByteArray(), 0, jpeg.size()) else null
+        if (decoded == null) {
+            return Bitmap.createBitmap(outW.coerceAtLeast(2), outH.coerceAtLeast(2), Bitmap.Config.ARGB_8888)
+        }
+        val scaled = scaleBitmap(decoded, maxOf(outW, outH).coerceAtLeast(2))
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
+    }
+
+    private fun yuvToNv21(image: Image): ByteArray {
+        val crop = image.cropRect
+        val width = crop.width() and 1.inv()
+        val height = crop.height() and 1.inv()
+        if (width < 2 || height < 2 || image.planes.size < 3) return ByteArray(0)
+        val nv21 = ByteArray(width * height * 3 / 2)
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        val yBuf = yPlane.buffer.duplicate().apply { clear() }
+        val uBuf = uPlane.buffer.duplicate().apply { clear() }
+        val vBuf = vPlane.buffer.duplicate().apply { clear() }
+        var pos = 0
+        for (row in 0 until height) {
+            val yRow = (crop.top + row) * yPlane.rowStride + crop.left * yPlane.pixelStride
+            if (yPlane.pixelStride == 1 && yRow >= 0 && yRow + width <= yBuf.capacity()) {
+                yBuf.position(yRow)
+                yBuf.get(nv21, pos, width)
+                pos += width
+            } else {
+                for (col in 0 until width) {
+                    val index = yRow + col * yPlane.pixelStride
+                    nv21[pos++] = if (index in 0 until yBuf.capacity()) yBuf.get(index) else 0
+                }
+            }
+        }
+        var cPos = width * height
+        val chromaH = height / 2
+        val chromaW = width / 2
+        for (row in 0 until chromaH) {
+            for (col in 0 until chromaW) {
+                val uIndex = (crop.top / 2 + row) * uPlane.rowStride + (crop.left / 2 + col) * uPlane.pixelStride
+                val vIndex = (crop.top / 2 + row) * vPlane.rowStride + (crop.left / 2 + col) * vPlane.pixelStride
+                nv21[cPos++] = if (vIndex in 0 until vBuf.capacity()) vBuf.get(vIndex) else 0
+                nv21[cPos++] = if (uIndex in 0 until uBuf.capacity()) uBuf.get(uIndex) else 0
+            }
+        }
+        return nv21
     }
 
     private fun requireVideo(input: File) {
@@ -234,29 +465,52 @@ object DeviceMedia {
 
     private fun transcodeMp4(input: File, output: File, maxHeight: Int, durationMs: Long, onProgress: (Float) -> Unit) {
         val audioFile = File(output.parentFile, output.nameWithoutExtension + "_a.m4a")
-        val hasAudio = try {
-            audio(input, durationMs, { p -> onProgress(p * 0.25f) }) { rate, ch -> AacSink(audioFile, rate, ch) }
-            audioFile.exists() && audioFile.length() > 0
+        // AAC already in the source is copied. Decoding the whole track to PCM first made a
+        // long video sit near the start of the bar, then the video pass still had to run.
+        val copyAudio = audioMime(input) == "audio/mp4a-latm"
+        var encodedAudio = false
+        val hasAudio = if (copyAudio) true else try {
+            audio(input, durationMs, { p -> onProgress((p * 0.12f).coerceIn(0f, 0.12f)) }) { rate, ch -> AacSink(audioFile, rate, ch) }
+            encodedAudio = audioFile.exists() && audioFile.length() > 0
+            encodedAudio
         } catch (e: IllegalStateException) {
             if (e.message?.startsWith("Could not read this media file") == true) throw e
             false
         }
-        if (!hasAudio) audioFile.delete()
-        val audioPath = if (hasAudio) audioFile else null
+        if (!encodedAudio) audioFile.delete()
+        val audioPath = when {
+            copyAudio -> input
+            hasAudio -> audioFile
+            else -> null
+        }
+        var shown = 0.12f
+        fun videoProgress(fraction: Float) {
+            val next = (0.12f + 0.88f * fraction.coerceIn(0f, 1f)).coerceAtLeast(shown)
+            if (next > shown) {
+                shown = next
+                onProgress(next)
+            }
+        }
         try {
-            val surfaceOk = runCatching { transcodeSurface(input, output, audioPath, maxHeight, durationMs, onProgress) }.getOrDefault(false)
-            if (!surfaceOk || !videoHasSamples(output)) {
+            // One hardware pass. A second full-length encode made the bar finish and start over,
+            // and the frame-by-frame fallback never finished a multi-minute video.
+            output.delete()
+            val surfaceOk = runCatching {
+                transcodeSurface(input, output, audioPath, maxHeight, durationMs, false, Int.MAX_VALUE, ::videoProgress)
+            }.getOrDefault(false)
+            if (surfaceOk && videoHasSamples(output)) return
+            output.delete()
+            // A second full-length encode is what made a 3-minute video sit on the bar and then fail.
+            val decoded = runCatching {
+                transcodeFromDecoder(input, output, audioPath, if (maxHeight <= 0) 720 else maxHeight, durationMs, ::videoProgress)
+            }.getOrDefault(false)
+            if (!decoded || !videoHasSamples(output)) {
                 output.delete()
-                val decoded = runCatching { transcodeFromDecoder(input, output, audioPath, maxHeight, durationMs, onProgress) }.getOrDefault(false)
-                if (!decoded || !videoHasSamples(output)) {
-                    output.delete()
-                    transcodeFromFrames(input, output, audioPath, maxHeight, durationMs, onProgress)
-                }
+                throw IllegalStateException("Could not create a playable video.")
             }
         } finally {
-            audioFile.delete()
+            if (encodedAudio) audioFile.delete()
         }
-        if (!videoHasSamples(output)) throw IllegalStateException("Could not create a playable video.")
     }
 
     /**
@@ -264,7 +518,8 @@ object DeviceMedia {
      * frames; those frames still have to be rendered or the saved file has no picture.
      */
     private fun transcodeSurface(
-        input: File, output: File, audioFile: File?, maxHeight: Int, durationMs: Long, onProgress: (Float) -> Unit
+        input: File, output: File, audioFile: File?, maxHeight: Int, durationMs: Long,
+        software: Boolean, maxSamples: Int, onProgress: (Float) -> Unit
     ): Boolean {
         val ex = openExtractor(input)
         val vIndex = findTrack(ex, "video/")
@@ -274,27 +529,28 @@ object DeviceMedia {
         val mime = srcFmt.getString(MediaFormat.KEY_MIME) ?: "video/avc"
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
-        var muxer: MediaMuxer? = null
+        var scaler: SurfaceScaler? = null
+        val pack = Mp4Pack(output)
         var muxerOn = false
         var videoSamples = 0
         try {
             val encFmt = surfaceEncoderFormat(width, height, maxHeight)
-            val enc = MediaCodec.createEncoderByType("video/avc")
+            val enc = openAvcEncoder(software)
             encoder = enc
             enc.configure(encFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             val surface = enc.createInputSurface()
             enc.start()
             requestSyncFrame(enc)
+            // A smaller surface fed straight from the decoder comes out as green lines.
+            // Draw the full frame through GL when the picture is being resized.
+            scaler = if (maxHeight > 0) {
+                val (srcW, srcH) = sizeOf(srcFmt)
+                SurfaceScaler(surface, srcW, srcH, width, height)
+            } else null
             val dec = MediaCodec.createDecoderByType(mime)
             decoder = dec
-            dec.configure(videoDecoderFormat(srcFmt), surface, null, 0)
+            dec.configure(videoDecoderFormat(srcFmt), scaler?.inputSurface ?: surface, null, 0)
             dec.start()
-            val mux = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            muxer = mux
-            if (rotation != 0) mux.setOrientationHint(rotation)
-
-            var videoTrack = -1
-            var audioTrack = -1
             val audioExtractor = audioFile?.let { runCatching { openExtractor(it) }.getOrNull() }
             var audioBuf: ByteBuffer? = null
             if (audioExtractor != null) {
@@ -311,6 +567,9 @@ object DeviceMedia {
             var encoderDone = false
             var signaled = false
             var spins = 0
+            var rendered = 0
+            var rejected = 0
+            var lastPts = -1L
             val info = MediaCodec.BufferInfo()
             val wait = 100L
             while (!encoderDone) {
@@ -324,8 +583,7 @@ object DeviceMedia {
                             dec.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             extractorDone = true
                         } else {
-                            val flags = if (ex.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0
-                            dec.queueInputBuffer(inIndex, 0, size, ex.sampleTime.coerceAtLeast(0), flags)
+                            dec.queueInputBuffer(inIndex, 0, size, ex.sampleTime.coerceAtLeast(0), 0)
                             ex.advance()
                         }
                         moved = true
@@ -337,8 +595,13 @@ object DeviceMedia {
                     else if (outIndex >= 0) {
                         val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                         val config = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                        dec.releaseOutputBuffer(outIndex, !config)
-                        if (!config) requestSyncFrame(enc)
+                        val render = info.size > 0 && !config
+                        if (render) {
+                            rendered++
+                            if (!sawKey) requestSyncFrame(enc)
+                        }
+                        dec.releaseOutputBuffer(outIndex, render)
+                        if (render) scaler?.draw(info.presentationTimeUs)
                         if (eos && !signaled) {
                             enc.signalEndOfInputStream()
                             signaled = true
@@ -351,11 +614,13 @@ object DeviceMedia {
                 when {
                     encIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                         if (!muxerOn) {
-                            videoTrack = mux.addTrack(enc.outputFormat)
-                            audioTrack = addAudioTrack(mux, audioExtractor)
-                            mux.start()
+                            val sets = parameterSets(enc.outputFormat) ?: return false
+                            pack.addVideo(width, height, rotation, sets.first, sets.second)
+                            aacInfo(audioExtractor)?.let { pack.addAac(it.rate, it.channels, it.asc) }
                             muxerOn = true
-                            for (s in pendingVideo) mux.writeSampleData(videoTrack, ByteBuffer.wrap(s.data), s.info())
+                            for (s in pendingVideo) {
+                                pack.video(s.data, s.ptsUs, s.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0)
+                            }
                             pendingVideo.clear()
                         }
                         moved = true
@@ -363,14 +628,28 @@ object DeviceMedia {
                     encIndex >= 0 -> {
                         val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                         if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                            val data = bytesOf(enc.getOutputBuffer(encIndex)!!, info)
+                            val data = avccSample(bytesOf(enc.getOutputBuffer(encIndex)!!, info))
                             val flags = keyFlags(data, info.flags, sawKey)
-                            if (flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) sawKey = true
-                            val sample = Sample(data, info.presentationTimeUs.coerceAtLeast(0), flags)
-                            if (muxerOn) mux.writeSampleData(videoTrack, ByteBuffer.wrap(data), sample.info())
-                            else pendingVideo.add(sample)
-                            videoSamples++
-                            if (durationMs > 0) onProgress((0.25f + 0.75f * (sample.ptsUs / 1000f / durationMs)).coerceIn(0.25f, 1f))
+                            val key = flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                            if (key) sawKey = true
+                            if (!sawKey) {
+                                // The muxer drops every frame until byte 4 is an IDR. Writing
+                                // those frames still takes the whole clip and then fails.
+                                rejected++
+                                if (rejected > 48) encoderDone = true
+                            } else {
+                                val rawPts = info.presentationTimeUs.coerceAtLeast(0)
+                                val pts = if (rawPts <= lastPts) lastPts + 1 else rawPts
+                                lastPts = pts
+                                val sample = Sample(data, pts, flags)
+                                if (muxerOn) pack.video(data, pts, key)
+                                else pendingVideo.add(sample)
+                                videoSamples++
+                                if (videoSamples >= maxSamples) encoderDone = true
+                                if (durationMs > 0 && maxSamples == Int.MAX_VALUE) {
+                                    onProgress((sample.ptsUs / 1000f / durationMs).coerceIn(0f, 1f))
+                                }
+                            }
                         }
                         enc.releaseOutputBuffer(encIndex, false)
                         if (eos) encoderDone = true
@@ -379,23 +658,27 @@ object DeviceMedia {
                 }
                 if (!moved) {
                     spins++
-                    if (spins > 400) break
+                    val limit = if (decoderDone) 80 else 1200
+                    if (spins > limit) break
                 } else spins = 0
+                // The encoder stayed silent after many pictures. Stop and try another size.
+                if (rendered > 24 && videoSamples == 0 && !muxerOn) break
             }
-            if (muxerOn && audioTrack >= 0 && audioExtractor != null && audioBuf != null) {
-                writeAudioSamples(audioExtractor, audioBuf, mux, audioTrack)
+            if (muxerOn && audioExtractor != null && audioBuf != null) {
+                writePackedAudio(audioExtractor, audioBuf, pack)
             }
             audioExtractor?.release()
-            if (muxerOn && videoSamples > 0) mux.stop() else return false
+            if (muxerOn && videoSamples > 0) pack.finish() else return false
             return videoSamples > 0
         } catch (e: Exception) {
             return false
         } finally {
             runCatching { decoder?.stop() }
             runCatching { decoder?.release() }
+            runCatching { scaler?.release() }
             runCatching { encoder?.stop() }
             runCatching { encoder?.release() }
-            runCatching { muxer?.release() }
+            pack.close()
             ex.release()
         }
     }
@@ -413,20 +696,23 @@ object DeviceMedia {
         ex.selectTrack(vIndex)
         val srcFmt = ex.getTrackFormat(vIndex)
         val mime = srcFmt.getString(MediaFormat.KEY_MIME) ?: run { ex.release(); return false }
-        val (srcW, srcH) = sizeOf(srcFmt)
         val (width, height, rotation) = targetSize(srcFmt, maxHeight)
-        if (kotlin.math.abs(width - align16(srcW)) > 16 || kotlin.math.abs(height - align16(srcH)) > 16) {
-            ex.release()
-            return false
-        }
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
-        var muxer: MediaMuxer? = null
+        val pack = Mp4Pack(output)
         var videoSamples = 0
         try {
             val dec = MediaCodec.createDecoderByType(mime)
             decoder = dec
-            dec.configure(videoDecoderFormat(srcFmt), null, null, 0)
+            val flexible = videoDecoderFormat(srcFmt).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+            }
+            try {
+                dec.configure(flexible, null, null, 0)
+            } catch (e: Exception) {
+                dec.reset()
+                dec.configure(videoDecoderFormat(srcFmt), null, null, 0)
+            }
             dec.start()
             val colorChoice = encoderColorFormat()
             val enc = MediaCodec.createEncoderByType("video/avc")
@@ -435,7 +721,9 @@ object DeviceMedia {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, colorChoice)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height, maxHeight))
                 setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                setInteger(MediaFormat.KEY_OPERATING_RATE, 120)
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
                 if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
             }
             enc.configure(encFmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -446,13 +734,9 @@ object DeviceMedia {
             val slice = inFmt.intOr(MediaFormat.KEY_SLICE_HEIGHT, height).coerceAtLeast(height)
             val planar = inFmt.intOr(MediaFormat.KEY_COLOR_FORMAT, colorChoice) ==
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
-            val mux = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            muxer = mux
-            if (rotation != 0) mux.setOrientationHint(rotation)
             val audioExtractor = audioFile?.let { runCatching { openExtractor(it) }.getOrNull() }
-            var videoTrack = -1
-            var audioTrack = -1
             var muxerOn = false
+            var lastQueuedUs = Long.MIN_VALUE / 4
             var extractorDone = false
             var decoderDone = false
             var encoderDone = false
@@ -468,25 +752,28 @@ object DeviceMedia {
                         out == MediaCodec.INFO_TRY_AGAIN_LATER -> return
                         out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             if (!muxerOn) {
-                                videoTrack = mux.addTrack(enc.outputFormat)
-                                audioTrack = addAudioTrack(mux, audioExtractor)
-                                mux.start()
+                                val sets = parameterSets(enc.outputFormat) ?: return
+                                pack.addVideo(width, height, rotation, sets.first, sets.second)
+                                aacInfo(audioExtractor)?.let { pack.addAac(it.rate, it.channels, it.asc) }
                                 muxerOn = true
-                                for (s in pending) mux.writeSampleData(videoTrack, ByteBuffer.wrap(s.data), s.info())
+                                for (s in pending) {
+                                    pack.video(s.data, s.ptsUs, s.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0)
+                                }
                                 pending.clear()
                             }
                         }
                         out >= 0 -> {
                             val eos = encInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                             if (encInfo.size > 0 && encInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                                val data = bytesOf(enc.getOutputBuffer(out)!!, encInfo)
+                                val data = avccSample(bytesOf(enc.getOutputBuffer(out)!!, encInfo))
                                 val flags = keyFlags(data, encInfo.flags, sawKey)
-                                if (flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) sawKey = true
+                                val key = flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+                                if (key) sawKey = true
                                 val sample = Sample(data, encInfo.presentationTimeUs.coerceAtLeast(0), flags)
-                                if (muxerOn) mux.writeSampleData(videoTrack, ByteBuffer.wrap(data), sample.info())
+                                if (muxerOn) pack.video(data, sample.ptsUs, key)
                                 else pending.add(sample)
                                 videoSamples++
-                                if (durationMs > 0) onProgress((0.25f + 0.75f * (sample.ptsUs / 1000f / durationMs)).coerceIn(0.25f, 1f))
+                                if (durationMs > 0) onProgress((sample.ptsUs / 1000f / durationMs).coerceIn(0f, 1f))
                             }
                             enc.releaseOutputBuffer(out, false)
                             if (eos) encoderDone = true
@@ -506,8 +793,7 @@ object DeviceMedia {
                 buf.clear()
                 val size = minOf(yuv.size, buf.remaining())
                 buf.put(yuv, 0, size)
-                val flags = MediaCodec.BUFFER_FLAG_KEY_FRAME or
-                    (if (eos) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0)
+                val flags = (if (eos) MediaCodec.BUFFER_FLAG_END_OF_STREAM else 0)
                 enc.queueInputBuffer(inIndex, 0, size, pts.coerceAtLeast(0), flags)
                 return true
             }
@@ -533,16 +819,19 @@ object DeviceMedia {
                     if (outIndex >= 0) {
                         val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                         val config = info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0
-                        if (!config) {
+                        val keep = eos || info.presentationTimeUs - lastQueuedUs >= 100_000L
+                        if (!config && keep) {
                             val image = dec.getOutputImage(outIndex)
                             if (image != null) {
                                 val yuv = if (planar) imageToI420(image, width, height, stride, slice)
                                 else imageToNv12(image, width, height, stride, slice)
                                 image.close()
-                                queueYuv(yuv, info.presentationTimeUs, eos)
+                                if (queueYuv(yuv, info.presentationTimeUs, eos)) lastQueuedUs = info.presentationTimeUs
                             } else if (eos) {
                                 queueYuv(ByteArray(stride * slice * 3 / 2), info.presentationTimeUs, true)
                             }
+                        } else if (!config) {
+                            dec.getOutputImage(outIndex)?.close()
                         } else if (eos) {
                             queueYuv(ByteArray(stride * slice * 3 / 2), 0, true)
                         }
@@ -559,11 +848,11 @@ object DeviceMedia {
                 } else spins = 0
                 if (decoderDone && !encoderDone) drainEncoder(TIMEOUT)
             }
-            if (muxerOn && audioTrack >= 0 && audioExtractor != null) {
-                writeAudioSamples(audioExtractor, ByteBuffer.allocateDirect(256 * 1024), mux, audioTrack)
+            if (muxerOn && audioExtractor != null) {
+                writePackedAudio(audioExtractor, ByteBuffer.allocateDirect(256 * 1024), pack)
             }
             audioExtractor?.release()
-            if (muxerOn && videoSamples > 0) mux.stop()
+            if (muxerOn && videoSamples > 0) pack.finish()
             return videoSamples > 0
         } catch (e: Exception) {
             return false
@@ -572,7 +861,7 @@ object DeviceMedia {
             runCatching { decoder?.release() }
             runCatching { encoder?.stop() }
             runCatching { encoder?.release() }
-            runCatching { muxer?.release() }
+            pack.close()
             ex.release()
         }
     }
@@ -604,7 +893,7 @@ object DeviceMedia {
                 setInteger(MediaFormat.KEY_COLOR_FORMAT, color)
                 setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height, maxHeight))
                 setInteger(MediaFormat.KEY_FRAME_RATE, 12)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                 if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
                 setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, width * height * 3 / 2)
             }
@@ -643,7 +932,7 @@ object DeviceMedia {
                         out >= 0 -> {
                             val eos = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                             if (info.size > 0 && info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0) {
-                                val data = bytesOf(enc.getOutputBuffer(out)!!, info)
+                                val data = avccSample(bytesOf(enc.getOutputBuffer(out)!!, info))
                                 val flags = keyFlags(data, info.flags, sawKey)
                                 if (flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0) sawKey = true
                                 val sample = Sample(data, info.presentationTimeUs.coerceAtLeast(0), flags)
@@ -713,33 +1002,95 @@ object DeviceMedia {
     private fun requestSyncFrame(enc: MediaCodec) {
         runCatching {
             enc.setParameters(android.os.Bundle().apply {
-                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 1)
             })
         }
     }
 
-    /** MediaTek's muxer drops every frame until one is marked as a key frame. */
+    /** This phone keeps a frame only when the sample itself is an IDR, not when the flag is set. */
     private fun keyFlags(data: ByteArray, flags: Int, sawKey: Boolean): Int {
-        val key = flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0 || isAvcKey(data) || !sawKey
-        return if (key) flags or MediaCodec.BUFFER_FLAG_KEY_FRAME else flags
+        val key = isAvcKey(data)
+        return if (key) flags or MediaCodec.BUFFER_FLAG_KEY_FRAME else flags and MediaCodec.BUFFER_FLAG_KEY_FRAME.inv()
     }
 
-    private fun isAvcKey(data: ByteArray): Boolean {
-        if (data.size >= 5 && data[0] == 0.toByte() && data[1] == 0.toByte()) {
-            val nal = if (data[2] == 1.toByte()) data[3] else if (data[2] == 0.toByte() && data[3] == 1.toByte()) data[4] else return false
-            return (nal.toInt() and 0x1F) == 5
+    private fun openAvcEncoder(software: Boolean): MediaCodec {
+        if (software) {
+            val infos = MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
+            val soft = infos.firstOrNull { info ->
+                info.isEncoder &&
+                    info.supportedTypes.any { it.equals("video/avc", ignoreCase = true) } &&
+                    (info.name.startsWith("c2.android") || info.name.startsWith("OMX.google"))
+            }
+            if (soft != null) return MediaCodec.createByCodecName(soft.name)
         }
+        return MediaCodec.createEncoderByType("video/avc")
+    }
+
+    /**
+     * This phone's muxer keeps a frame only when byte 4 is an IDR NAL. Annex-B sync frames and
+     * frames that start with SPS are dropped, so the saved file has no picture.
+     */
+    private fun avccSample(data: ByteArray): ByteArray {
+        val nals = nalUnits(data)
+        if (nals.isEmpty()) return data
+        val idr = nals.indexOfFirst { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 5 }
+        val use = if (idr >= 0) nals.subList(idr, nals.size) else nals
+        val out = java.io.ByteArrayOutputStream(data.size + use.size * 4)
+        for (nal in use) {
+            val len = nal.size
+            out.write(len ushr 24)
+            out.write(len ushr 16)
+            out.write(len ushr 8)
+            out.write(len)
+            out.write(nal)
+        }
+        val bytes = out.toByteArray()
+        return if (bytes.isEmpty()) data else bytes
+    }
+
+    private fun nalUnits(data: ByteArray): List<ByteArray> {
+        if (data.size < 3) return emptyList()
+        val annex = (data.size >= 4 && data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 0.toByte() && data[3] == 1.toByte()) ||
+            (data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 1.toByte())
+        if (annex) {
+            val starts = ArrayList<Int>()
+            var i = 0
+            while (i + 3 < data.size) {
+                val three = data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 1.toByte()
+                val four = i + 4 < data.size && data[i] == 0.toByte() && data[i + 1] == 0.toByte() &&
+                    data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()
+                if (four) { starts.add(i + 4); i += 4 }
+                else if (three) { starts.add(i + 3); i += 3 }
+                else i++
+            }
+            return starts.mapIndexed { idx, s ->
+                val end = if (idx + 1 < starts.size) {
+                    var cut = starts[idx + 1]
+                    if (cut >= 4 && data[cut - 1] == 1.toByte() && data[cut - 2] == 0.toByte() && data[cut - 3] == 0.toByte() && data[cut - 4] == 0.toByte()) cut -= 4
+                    else if (cut >= 3 && data[cut - 1] == 1.toByte() && data[cut - 2] == 0.toByte() && data[cut - 3] == 0.toByte()) cut -= 3
+                    cut.coerceAtLeast(s)
+                } else data.size
+                data.copyOfRange(s, end)
+            }.filter { it.isNotEmpty() }
+        }
+        val out = ArrayList<ByteArray>()
         var i = 0
-        while (i + 4 < data.size) {
+        while (i + 4 <= data.size) {
             val len = ((data[i].toInt() and 0xFF) shl 24) or
                 ((data[i + 1].toInt() and 0xFF) shl 16) or
                 ((data[i + 2].toInt() and 0xFF) shl 8) or
                 (data[i + 3].toInt() and 0xFF)
-            if (len <= 0 || i + 4 + len > data.size) return false
-            if ((data[i + 4].toInt() and 0x1F) == 5) return true
+            if (len <= 0 || i + 4 + len > data.size) break
+            out.add(data.copyOfRange(i + 4, i + 4 + len))
             i += 4 + len
         }
-        return false
+        return out
+    }
+
+    private fun isAvcKey(data: ByteArray): Boolean {
+        if (data.size < 5) return false
+        val nal = if (data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 1.toByte()) data[3] else data[4]
+        return (nal.toInt() and 0x1F) == 5
     }
 
     private fun videoDecoderFormat(src: MediaFormat): MediaFormat {
@@ -758,12 +1109,65 @@ object DeviceMedia {
         return fmt
     }
 
+    /** The raw extractor format carries keys that make this phone's audio decoder fail with no message. */
+    private fun audioDecoderFormat(src: MediaFormat): MediaFormat {
+        val mime = src.getString(MediaFormat.KEY_MIME) ?: "audio/mp4a-latm"
+        val rate = src.intOr(MediaFormat.KEY_SAMPLE_RATE, 44100).takeIf { it > 0 } ?: 44100
+        val channels = src.intOr(MediaFormat.KEY_CHANNEL_COUNT, 2).coerceIn(1, 8)
+        val fmt = MediaFormat.createAudioFormat(mime, rate, channels)
+        var hasCsd = false
+        for (key in listOf("csd-0", "csd-1")) {
+            val raw = src.getByteBuffer(key) ?: continue
+            val copy = copyCsd(raw)
+            if (copy.remaining() in 1..16) {
+                fmt.setByteBuffer(key, copy)
+                hasCsd = true
+            }
+        }
+        if (mime.contains("mp4a")) {
+            if (!hasCsd) fmt.setByteBuffer("csd-0", aacConfig(rate, channels))
+            fmt.setInteger(MediaFormat.KEY_AAC_PROFILE, 2)
+            fmt.setInteger(MediaFormat.KEY_IS_ADTS, 0)
+        }
+        fmt.setInteger(
+            MediaFormat.KEY_MAX_INPUT_SIZE,
+            src.intOr(MediaFormat.KEY_MAX_INPUT_SIZE, 256 * 1024).coerceIn(16 * 1024, 1024 * 1024)
+        )
+        return fmt
+    }
+
+    private fun copyCsd(src: ByteBuffer): ByteBuffer {
+        val d = src.duplicate()
+        if (d.remaining() <= 0) return ByteBuffer.allocate(0)
+        val n = d.remaining().coerceAtMost(64)
+        val bytes = ByteArray(n)
+        d.get(bytes)
+        return ByteBuffer.wrap(bytes)
+    }
+
+    private fun aacConfig(rate: Int, channels: Int): ByteBuffer {
+        val rates = intArrayOf(96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350)
+        val idx = rates.indexOf(rate).let { if (it >= 0) it else 4 }
+        val ch = channels.coerceIn(1, 6)
+        val b0 = (2 shl 3) or (idx shr 1)
+        val b1 = ((idx and 1) shl 7) or (ch shl 3)
+        return ByteBuffer.wrap(byteArrayOf(b0.toByte(), b1.toByte()))
+    }
+
     private fun surfaceEncoderFormat(width: Int, height: Int, maxHeight: Int): MediaFormat =
         MediaFormat.createVideoFormat("video/avc", width, height).apply {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrateFor(width, height, maxHeight))
             setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 0)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            setInteger(MediaFormat.KEY_OPERATING_RATE, if (maxHeight > 0) 30 else 120)
+            setInteger(MediaFormat.KEY_PRIORITY, 0)
+            if (maxHeight > 0 && Build.VERSION.SDK_INT >= 24) {
+                setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
+                setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
+                setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
+            }
             if (Build.VERSION.SDK_INT >= 29) setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         }
 
@@ -777,6 +1181,88 @@ object DeviceMedia {
             if (semi in formats) semi else if (planar in formats) planar else semi
         } catch (e: Exception) {
             semi
+        }
+    }
+
+    private class AacInfo(val rate: Int, val channels: Int, val asc: ByteArray)
+
+    private fun parameterSets(fmt: MediaFormat): Pair<ByteArray, ByteArray>? {
+        val nals = ArrayList<ByteArray>()
+        for (key in listOf("csd-0", "csd-1", "csd-2")) {
+            val raw = fmt.getByteBuffer(key) ?: continue
+            val d = raw.duplicate()
+            val bytes = ByteArray(d.remaining())
+            if (bytes.isEmpty()) continue
+            d.get(bytes)
+            if (bytes[0] == 1.toByte() && bytes.size > 7) nals.addAll(nalsFromAvcC(bytes))
+            val parts = nalUnits(bytes)
+            if (parts.isEmpty()) nals.add(bytes) else nals.addAll(parts)
+        }
+        val sps = nals.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 7 } ?: return null
+        val pps = nals.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 8 } ?: return null
+        return sps to pps
+    }
+
+    private fun nalsFromAvcC(data: ByteArray): List<ByteArray> {
+        if (data.size < 7 || data[0] != 1.toByte()) return emptyList()
+        val out = ArrayList<ByteArray>()
+        var i = 5
+        val nSps = data[i].toInt() and 0x1F
+        i++
+        repeat(nSps) {
+            if (i + 2 > data.size) return out
+            val len = ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            i += 2
+            if (len <= 0 || i + len > data.size) return out
+            out.add(data.copyOfRange(i, i + len))
+            i += len
+        }
+        if (i >= data.size) return out
+        val nPps = data[i].toInt() and 0xFF
+        i++
+        repeat(nPps) {
+            if (i + 2 > data.size) return out
+            val len = ((data[i].toInt() and 0xFF) shl 8) or (data[i + 1].toInt() and 0xFF)
+            i += 2
+            if (len <= 0 || i + len > data.size) return out
+            out.add(data.copyOfRange(i, i + len))
+            i += len
+        }
+        return out
+    }
+
+    private fun aacInfo(audio: MediaExtractor?): AacInfo? {
+        if (audio == null) return null
+        val index = findTrack(audio, "audio/")
+        if (index < 0) return null
+        val src = audio.getTrackFormat(index)
+        val mime = src.getString(MediaFormat.KEY_MIME) ?: return null
+        if (!mime.contains("mp4a")) return null
+        val rate = src.intOr(MediaFormat.KEY_SAMPLE_RATE, 44100).takeIf { it > 0 } ?: 44100
+        val channels = src.intOr(MediaFormat.KEY_CHANNEL_COUNT, 2).coerceIn(1, 2)
+        val csd = src.getByteBuffer("csd-0")
+        val asc = if (csd != null && csd.remaining() in 2..16) {
+            val d = csd.duplicate()
+            ByteArray(d.remaining()).also { d.get(it) }
+        } else {
+            val bb = aacConfig(rate, channels)
+            ByteArray(bb.remaining()).also { bb.get(it) }
+        }
+        return AacInfo(rate, channels, asc)
+    }
+
+    private fun writePackedAudio(audio: MediaExtractor, buf: ByteBuffer, pack: Mp4Pack) {
+        while (true) {
+            buf.clear()
+            val n = audio.readSampleData(buf, 0)
+            if (n <= 0) break
+            val bytes = ByteArray(n)
+            val view = buf.duplicate()
+            view.position(0)
+            view.limit(n)
+            view.get(bytes)
+            pack.audio(bytes, audio.sampleTime.coerceAtLeast(0))
+            audio.advance()
         }
     }
 
@@ -806,8 +1292,19 @@ object DeviceMedia {
         }
     }
 
+    private fun audioMime(file: File): String? {
+        val ex = runCatching { openExtractor(file) }.getOrNull() ?: return null
+        return try {
+            val index = findTrack(ex, "audio/")
+            if (index < 0) null else ex.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
+        } finally {
+            ex.release()
+        }
+    }
+
+    /** A real encoded frame is far larger than a few hundred bytes. Reading into a tiny buffer reports no video. */
     private fun videoHasSamples(file: File): Boolean {
-        if (!file.exists() || file.length() < 64) return false
+        if (!file.exists() || file.length() < 1024) return false
         val ex = MediaExtractor()
         return try {
             ex.setDataSource(file.absolutePath)
@@ -815,7 +1312,7 @@ object DeviceMedia {
             if (v < 0) false
             else {
                 ex.selectTrack(v)
-                ex.readSampleData(ByteBuffer.allocate(256), 0) > 0
+                ex.sampleTime >= 0
             }
         } catch (e: Exception) {
             false
@@ -969,10 +1466,28 @@ object DeviceMedia {
                 throw IllegalStateException("This audio format is not supported on this phone.")
             }
             try {
-                decoder.configure(fmt, null, null, 0)
-                decoder.start()
-                var rate = fmt.intOr(MediaFormat.KEY_SAMPLE_RATE, 44100)
-                var channels = fmt.intOr(MediaFormat.KEY_CHANNEL_COUNT, 1).coerceIn(1, 2)
+                val rate0 = fmt.intOr(MediaFormat.KEY_SAMPLE_RATE, 44100).takeIf { it > 0 } ?: 44100
+                val channels0 = fmt.intOr(MediaFormat.KEY_CHANNEL_COUNT, 2).coerceIn(1, 2)
+                try {
+                    decoder.configure(audioDecoderFormat(fmt), null, null, 0)
+                    decoder.start()
+                } catch (e: Exception) {
+                    runCatching { decoder.reset() }
+                    try {
+                        val bare = MediaFormat.createAudioFormat(mime, rate0, channels0)
+                        if (mime.contains("mp4a")) {
+                            bare.setByteBuffer("csd-0", aacConfig(rate0, channels0))
+                            bare.setInteger(MediaFormat.KEY_AAC_PROFILE, 2)
+                        }
+                        bare.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 256 * 1024)
+                        decoder.configure(bare, null, null, 0)
+                        decoder.start()
+                    } catch (e2: Exception) {
+                        throw IllegalStateException("Could not read the audio in this file.")
+                    }
+                }
+                var rate = rate0
+                var channels = channels0
                 var inputDone = false
                 var outputDone = false
                 var idle = 0
@@ -983,7 +1498,12 @@ object DeviceMedia {
                         val inIndex = decoder.dequeueInputBuffer(200)
                         if (inIndex >= 0) {
                             moved = true
-                            val buf = decoder.getInputBuffer(inIndex)!!
+                            val buf = decoder.getInputBuffer(inIndex)
+                            if (buf == null) {
+                                decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                                continue
+                            }
                             val size = ex.readSampleData(buf, 0)
                             if (size < 0) {
                                 decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -1006,10 +1526,11 @@ object DeviceMedia {
                         }
                         outIndex >= 0 -> {
                             moved = true
-                            if (info.size > 0) {
+                            val outBuf = decoder.getOutputBuffer(outIndex)
+                            if (info.size > 0 && outBuf != null) {
                                 val encoding = if (Build.VERSION.SDK_INT >= 24 && decoder.outputFormat.containsKey(MediaFormat.KEY_PCM_ENCODING))
                                     decoder.outputFormat.getInteger(MediaFormat.KEY_PCM_ENCODING) else 2
-                                val shorts = pcmShorts(decoder.getOutputBuffer(outIndex)!!, info, encoding == 4)
+                                val shorts = pcmShorts(outBuf, info, encoding == 4)
                                 val (mixed, ch) = downmix(shorts, channels)
                                 if (mixed.isNotEmpty()) onChunk(rate, ch, mixed)
                             }
@@ -1018,8 +1539,14 @@ object DeviceMedia {
                         }
                     }
                     if (moved) idle = 0
-                    else if (++idle > 100) throw IllegalStateException("Could not decode this audio. Try another file.")
+                    else if (++idle > 40) throw IllegalStateException("Could not decode this audio. Try another file.")
                 }
+            } catch (e: IllegalStateException) {
+                val detail = e.message?.trim().orEmpty()
+                if (detail.isEmpty() || detail.equals("unknown error", true)) {
+                    throw IllegalStateException("Could not decode this audio. Try another file.")
+                }
+                throw e
             } finally {
                 runCatching { decoder.stop() }
                 runCatching { decoder.release() }
@@ -1130,11 +1657,17 @@ object DeviceMedia {
         var (w, h) = sizeOf(fmt)
         val rotation = if (fmt.containsKey(MediaFormat.KEY_ROTATION)) fmt.getInteger(MediaFormat.KEY_ROTATION) else 0
         if (maxHeight > 0) {
+            // 720p fits in 1280×720. 480p fits in 854×480. A tall phone video
+            // shrinks on both sides, so it is lighter than the original.
+            val longSide = if (maxHeight <= 480) 854 else 1280
+            val displayW = if (rotation == 90 || rotation == 270) h else w
             val displayH = if (rotation == 90 || rotation == 270) w else h
-            if (displayH > maxHeight) {
-                val s = maxHeight.toFloat() / displayH
-                w = (w * s).toInt()
-                h = (h * s).toInt()
+            val scaleW = longSide.toFloat() / displayW.coerceAtLeast(1)
+            val scaleH = maxHeight.toFloat() / displayH.coerceAtLeast(1)
+            val scale = minOf(scaleW, scaleH, 1f)
+            if (scale < 0.98f) {
+                w = (w * scale).toInt()
+                h = (h * scale).toInt()
             }
         }
         return Triple(align16(w), align16(h), rotation)
@@ -1142,16 +1675,27 @@ object DeviceMedia {
 
     private fun even(v: Int) = v.coerceAtLeast(2) and 1.inv()
 
-    /** MediaTek's AVC encoder drops every frame when the size is not a multiple of 16. */
+    /**
+     * MediaTek's AVC encoder drops every frame when the size is not a multiple of 16.
+     * Rounding 1080 up to 1088 is past the encoder limit, so the file ends up with no picture.
+     */
     private fun align16(v: Int): Int {
-        val x = v.coerceAtLeast(16)
-        return (x + 15) and 15.inv()
+        val x = v.coerceIn(16, 1920)
+        val down = x and 15.inv()
+        return down.coerceAtLeast(16)
     }
 
-    private fun bitrateFor(w: Int, h: Int, maxHeight: Int): Int = when {
-        maxHeight in 1..480 -> 900_000
-        maxHeight in 481..720 -> 1_800_000
-        else -> (w * h * 3).coerceIn(800_000, 8_000_000)
+    /**
+     * A fixed 1.8 Mbps on a small 720p frame still looks like the original.
+     * Tie the rate to the picture size so 720p and 480p are actually lighter.
+     */
+    private fun bitrateFor(w: Int, h: Int, maxHeight: Int): Int {
+        val pixels = w.toLong() * h.toLong()
+        return when {
+            maxHeight in 1..480 -> (pixels * 2).toInt().coerceIn(280_000, 800_000)
+            maxHeight in 481..720 -> (pixels * 3).toInt().coerceIn(450_000, 1_600_000)
+            else -> (pixels * 6).toInt().coerceIn(800_000, 8_000_000)
+        }
     }
 
     private fun codecPrivate(fmt: MediaFormat): ByteArray {
@@ -1385,39 +1929,64 @@ object DeviceMedia {
         fun release()
     }
 
-    private class Mp3Sink(private val file: File, private val rate: Int, private val channels: Int) : PcmSink {
+    private class Mp3Sink(private val file: File, rateIn: Int, channelsIn: Int) : PcmSink {
         private val lame: Lame
+        private val rate = if (rateIn > 0) rateIn else 44100
+        private val channels = channelsIn.coerceIn(1, 2)
         private val targetRate = supportedRate(rate)
         private val body = File(file.parentFile, file.name + ".body")
         private val out = FileOutputStream(body).buffered()
+        private var pending = ShortArray(32768)
+        private var count = 0
         override var finished = false
         init {
             loadLame()
             lame = try {
                 Lame().also { it.open(channels, targetRate, 128, 4) }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 throw IllegalStateException("Could not start the MP3 encoder on this phone.")
             }
         }
         override fun write(pcm: ShortArray) {
             val data = if (rate == targetRate) pcm else resample(pcm, channels, rate, targetRate)
-            val n = data.size - (data.size % channels)
-            if (n <= 0) return
-            val encoded = lame.encode(data, 0, n)
-            if (encoded != null && encoded.isNotEmpty()) out.write(encoded)
+            var off = 0
+            while (off < data.size) {
+                if (count == pending.size) pending = pending.copyOf(pending.size * 2)
+                val n = minOf(data.size - off, pending.size - count)
+                data.copyInto(pending, count, off, off + n)
+                count += n
+                off += n
+                while (count >= 16384) encodePending(16384)
+            }
         }
         override fun finish() {
             if (finished) return
             finished = true
-            val flush = lame.encode(ShortArray(0), 0, 0)
-            if (flush != null && flush.isNotEmpty()) out.write(flush)
+            val leftover = count - (count % channels)
+            if (leftover > 0) encodePending(leftover, pad = true)
             out.close()
-            val tag = lame.close()
+            val tag = runCatching { lame.close() }.getOrNull()
             FileOutputStream(file).use { dest ->
                 if (tag != null && tag.isNotEmpty()) dest.write(tag)
                 FileInputStream(body).use { it.copyTo(dest) }
             }
             body.delete()
+        }
+        /** The native encoder sizes its buffer from the sample count and overflows on short chunks. */
+        private fun encodePending(requested: Int, pad: Boolean = false) {
+            val aligned = minOf(requested, count) - (minOf(requested, count) % channels)
+            if (aligned <= 0) return
+            val need = if (pad) maxOf(aligned, 16384 - (16384 % channels)) else aligned
+            val chunk = ShortArray(need)
+            pending.copyInto(chunk, 0, 0, aligned)
+            pending.copyInto(pending, 0, aligned, count)
+            count -= aligned
+            val encoded = try {
+                lame.encode(chunk, 0, chunk.size)
+            } catch (e: Throwable) {
+                throw IllegalStateException("Could not write the MP3 file.")
+            }
+            if (encoded != null && encoded.isNotEmpty()) out.write(encoded)
         }
         override fun release() {
             runCatching { out.close() }

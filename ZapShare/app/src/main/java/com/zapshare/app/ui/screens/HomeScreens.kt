@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
@@ -195,6 +196,7 @@ fun HomeScreen(nav: NavController) {
                 TileGrid(
                     listOf(
                         ToolItem(Icons.Filled.Computer, stringResource(R.string.connect_pc), CatApps) { nav.navigate(Routes.PC) },
+                        ToolItem(Icons.Filled.PhotoLibrary, stringResource(R.string.status_saver), CatPhoto) { nav.navigate(Routes.STATUS) },
                         ToolItem(Icons.Filled.Groups, stringResource(R.string.group_share), CatVideo) { nav.navigate(Routes.GROUP) },
                         ToolItem(Icons.Filled.CloudDownload, stringResource(R.string.downloader), CatMusic) { nav.navigate(Routes.DOWNLOADER) },
                         ToolItem(Icons.Filled.Lock, stringResource(R.string.safebox), CatSafe) { nav.navigate(Routes.SAFEBOX) },
@@ -327,6 +329,7 @@ fun ToolsScreen(nav: NavController) {
                 ToolItem(Icons.Filled.Groups, stringResource(R.string.group_share), CatVideo) { nav.navigate(Routes.GROUP) },
                 ToolItem(Icons.Filled.Computer, stringResource(R.string.connect_pc), CatApps) { nav.navigate(Routes.PC) },
                 ToolItem(Icons.Filled.History, stringResource(R.string.history), CatDocs) { nav.navigate(Routes.HISTORY) },
+                ToolItem(Icons.Filled.PhotoLibrary, stringResource(R.string.status_saver), CatPhoto) { nav.navigate(Routes.STATUS) },
             ))
             ToolSection(stringResource(R.string.sec_download), listOf(
                 ToolItem(Icons.Filled.CloudDownload, stringResource(R.string.downloader), CatMusic) { nav.navigate(Routes.DOWNLOADER) },
@@ -401,7 +404,7 @@ fun MeScreen(nav: NavController) {
                     engineMsg = "…"
                     scope.launch { engineMsg = VideoDownloader.updateEngine(ctx) }
                 }
-                MenuRow(Icons.Filled.Info, stringResource(R.string.about), "ZapShare ${BuildConfig.VERSION_NAME}") {}
+                MenuRow(Icons.Filled.Info, stringResource(R.string.about), "Share you ${BuildConfig.VERSION_NAME}") {}
             }
         }
     }
@@ -473,6 +476,17 @@ fun SettingsScreen(nav: NavController) {
     var screenOn by remember { mutableStateOf(Prefs.keepScreenOn) }
     var confirmClear by remember { mutableStateOf(false) }
     var langDialog by remember { mutableStateOf(false) }
+    var saveDialog by remember { mutableStateOf(false) }
+    var saveLabel by remember { mutableStateOf(FileUtils.saveLocationLabel()) }
+    val pickFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            val flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            runCatching { ctx.contentResolver.takePersistableUriPermission(uri, flags) }
+            Prefs.saveTreeUri = uri.toString()
+            saveLabel = FileUtils.saveLocationLabel()
+        }
+        saveDialog = false
+    }
     var debugPremium by remember { mutableStateOf(Prefs.premiumDebug) }
     val langName = appLanguages.firstOrNull { it.first == currentLanguageTag() }?.second ?: appLanguages[0].second
 
@@ -499,7 +513,7 @@ fun SettingsScreen(nav: NavController) {
                     trailing = { Switch(relay, { relay = it; Prefs.groupRelay = it }) }) { relay = !relay; Prefs.groupRelay = relay }
                 MenuRow(Icons.Filled.WifiTethering, stringResource(R.string.keep_screen_on), null,
                     trailing = { Switch(screenOn, { screenOn = it; Prefs.keepScreenOn = it }) }) { screenOn = !screenOn; Prefs.keepScreenOn = screenOn }
-                MenuRow(Icons.Filled.FolderOpen, stringResource(R.string.save_location), "Download/ZapShare") {}
+                MenuRow(Icons.Filled.FolderOpen, stringResource(R.string.save_location), saveLabel) { saveDialog = true }
             }
             SectionCard(padding = 4.dp) {
                 SectionTitle(stringResource(R.string.permissions))
@@ -512,6 +526,9 @@ fun SettingsScreen(nav: NavController) {
                 MenuRow(Icons.Filled.Settings, stringResource(R.string.app_permissions), null) { ctx.startActivity(Permissions.appSettings(ctx)) }
             }
             SectionCard(padding = 4.dp) {
+                MenuRow(Icons.Filled.Dashboard, "Toolbar", if (Prefs.toolbarEnabled) "On • notification bar" else "Off") {
+                    nav.navigate(Routes.TOOLBAR)
+                }
                 MenuRow(Icons.Filled.History, stringResource(R.string.clear_history), null) { confirmClear = true }
                 MenuRow(Icons.Filled.PrivacyTip, stringResource(R.string.privacy_policy), null) {
                     ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://sites.google.com/view/mob-apps-inc/privacy-policy")))
@@ -544,6 +561,22 @@ fun SettingsScreen(nav: NavController) {
             }
         },
         confirmButton = { TextButton(onClick = { langDialog = false }) { Text(stringResource(R.string.close)) } }
+    )
+    if (saveDialog) AlertDialog(
+        onDismissRequest = { saveDialog = false },
+        title = { Text(stringResource(R.string.save_location)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Received files are saved in $saveLabel.")
+                TextButton(onClick = { pickFolder.launch(null) }) { Text("Choose a folder") }
+                TextButton(onClick = {
+                    Prefs.saveTreeUri = null
+                    saveLabel = FileUtils.saveLocationLabel()
+                    saveDialog = false
+                }) { Text("Use Download/ZapShare") }
+            }
+        },
+        confirmButton = { TextButton(onClick = { saveDialog = false }) { Text(stringResource(R.string.close)) } }
     )
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },

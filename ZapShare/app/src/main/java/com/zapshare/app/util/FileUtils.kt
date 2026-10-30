@@ -7,12 +7,14 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.core.content.FileProvider
 import com.zapshare.app.data.FileCategory
+import com.zapshare.app.data.Prefs
 import com.zapshare.app.data.ShareItem
 import java.io.BufferedOutputStream
 import java.io.File
@@ -158,14 +160,27 @@ object FileUtils {
         }
     }
 
-    // ---------- saving into Download/ZapShare/<sub> ----------
-    class PendingOutput(val uri: Uri, val stream: OutputStream, val file: File?)
+    // ---------- saving into Download/ZapShare/<sub>, or the folder chosen in Settings ----------
+    class PendingOutput(val uri: Uri, val stream: OutputStream, val file: File?, val saf: Boolean = false)
+
+    fun saveLocationLabel(): String {
+        val raw = Prefs.saveTreeUri ?: return "Download/$ROOT_DIR"
+        return runCatching {
+            val id = DocumentsContract.getTreeDocumentId(Uri.parse(raw))
+            Uri.decode(id).substringAfter(':').ifBlank { "Selected folder" }
+        }.getOrDefault("Selected folder")
+    }
 
     fun publicDir(sub: String): File =
         File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "$ROOT_DIR/$sub")
 
     fun createOutput(ctx: Context, name: String, mime: String, sub: String): PendingOutput {
         val clean = safeName(name)
+        val tree = Prefs.saveTreeUri
+        if (!tree.isNullOrBlank()) {
+            val saved = runCatching { createInTree(ctx, Uri.parse(tree), clean, mime, sub) }.getOrNull()
+            if (saved != null) return saved
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, clean)
@@ -185,7 +200,46 @@ object FileUtils {
         }
     }
 
+    private fun createInTree(ctx: Context, treeUri: Uri, name: String, mime: String, sub: String): PendingOutput? {
+        val resolver = ctx.contentResolver
+        val parent = treeChild(ctx, treeUri, sub) ?: return null
+        val type = mimeOf(name).takeIf { it != "application/octet-stream" } ?: mime
+        val doc = DocumentsContract.createDocument(resolver, parent, type, name) ?: return null
+        val os = resolver.openOutputStream(doc) ?: return null
+        return PendingOutput(doc, BufferedOutputStream(os, 256 * 1024), null, saf = true)
+    }
+
+    private fun treeChild(ctx: Context, treeUri: Uri, sub: String): Uri? {
+        val resolver = ctx.contentResolver
+        val rootId = DocumentsContract.getTreeDocumentId(treeUri)
+        val root = DocumentsContract.buildDocumentUriUsingTree(treeUri, rootId)
+        if (sub.isBlank()) return root
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, rootId)
+        resolver.query(
+            children,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE),
+            null, null, null
+        )?.use { cursor ->
+            val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+            val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            while (cursor.moveToNext()) {
+                val mime = if (mimeCol >= 0) cursor.getString(mimeCol) else null
+                val display = if (nameCol >= 0) cursor.getString(nameCol) else null
+                if (display == sub && mime == DocumentsContract.Document.MIME_TYPE_DIR && idCol >= 0) {
+                    return DocumentsContract.buildDocumentUriUsingTree(treeUri, cursor.getString(idCol))
+                }
+            }
+        }
+        val created = DocumentsContract.createDocument(resolver, root, DocumentsContract.Document.MIME_TYPE_DIR, sub)
+        return created ?: root
+    }
+
     fun finishOutput(ctx: Context, out: PendingOutput, success: Boolean) {
+        if (out.saf) {
+            if (!success) runCatching { ctx.contentResolver.delete(out.uri, null, null) }
+            return
+        }
         if (out.file != null) {
             if (success) MediaScannerConnection.scanFile(ctx, arrayOf(out.file.absolutePath), null, null)
             else out.file.delete()
